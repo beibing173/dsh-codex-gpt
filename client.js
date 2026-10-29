@@ -463,6 +463,17 @@ window.__ModuleLoader__.load({
       }
     })()
 
+    /**
+     * 运行时可见性控制：设置页保存后立即生效，不必重载插件。
+     * apply() 里把具体的 register/dispose 实现装进来，组件通过它切换。
+     */
+    const uiControls = {
+      setCardVisible: null,
+      setToggleVisible: null,
+      cardHandle: null,
+      toggleHandle: null,
+    }
+
     const usageStyles = {
       card: {
         display: 'flex',
@@ -1575,12 +1586,49 @@ window.__ModuleLoader__.load({
             },
           })
           setNotice(L('已保存并生效。', 'Saved and applied.'))
+          // 主保存也顺带应用两个看板开关的显隐（不必等重载）。
+          try {
+            if (uiControls.setCardVisible) uiControls.setCardVisible(!hideDashboard)
+            if (uiControls.setToggleVisible) uiControls.setToggleVisible(!dashboardOnly)
+          } catch {
+            // 显隐失败不影响保存结果
+          }
         } catch (saveFailure) {
           setError(String(saveFailure.message || saveFailure))
         } finally {
           setBusy(false)
         }
       }, [defaultModel, autoConsult, allowLan, delegateLight, deepseekModel, gptNameDetect, defaultUsageTab, dashboardOnly, hideDashboard])
+
+      /** 只保存两个看板开关：保存后立即应用显隐，不必重载插件。 */
+      const saveDashboardSwitches = useCallback(async () => {
+        setBusy(true)
+        setError('')
+        setNotice('')
+        try {
+          const data = await postOp({ op: 'setGlobal', patch: { dashboardOnly, hideDashboard } })
+          const globe = (data && data.global) || {}
+          const nextDashboardOnly = globe.dashboardOnly === true
+          const nextHideDashboard = globe.hideDashboard === true
+          setDashboardOnly(nextDashboardOnly)
+          setHideDashboard(nextHideDashboard)
+          try {
+            if (uiControls.setCardVisible) uiControls.setCardVisible(!nextHideDashboard)
+          } catch {
+            // 显隐失败不影响保存结果
+          }
+          try {
+            if (uiControls.setToggleVisible) uiControls.setToggleVisible(!nextDashboardOnly)
+          } catch {
+            // 同上
+          }
+          setNotice(nextDashboardOnly ? '已保存：仅看板模式（模型/工具需禁用→启用插件才完全生效）' : '已保存看板设置')
+        } catch (failure) {
+          setError(String(failure.message || failure))
+        } finally {
+          setBusy(false)
+        }
+      }, [dashboardOnly, hideDashboard])
 
       const checkNetwork = useCallback(async () => {
         setChecking(true)
@@ -1659,7 +1707,7 @@ window.__ModuleLoader__.load({
       return h(
         'div',
         { style: styles.page },
-        // ── 仅看板模式 / 关闭看板 ─────────────────────────────────────
+        // ── 看板开关（独立保存，保存后立即生效）────────────────────────
         h(
           'div',
           { style: styles.card },
@@ -1667,32 +1715,45 @@ window.__ModuleLoader__.load({
           h(
             'div',
             { style: styles.row },
-            h('input', {
-              type: 'checkbox',
-              checked: dashboardOnly,
-              onChange: (event) => setDashboardOnly(event.target.checked),
-            }),
-            h('span', { style: styles.label }, '仅看板模式：只保留用量看板'),
+            h(
+              'button',
+              {
+                type: 'button',
+                style: { ...styles.button, minWidth: '132px' },
+                onClick: () => setDashboardOnly(!dashboardOnly),
+              },
+              dashboardOnly ? '仅看板模式：已开启' : '仅看板模式：已关闭',
+            ),
+            h('span', { style: styles.hint }, '只保留用量看板'),
           ),
           h(
             'div',
             { style: styles.hint },
-            '开启后关闭 ChatGPT 模型、codex 工具、会话授权与凭证同步，设置页只留看板相关项。默认关闭；保存后需禁用→启用插件完全生效。',
+            '开启后关闭 ChatGPT 模型、codex 工具、会话授权与凭证同步，设置页只留看板相关项。',
           ),
           h(
             'div',
             { style: styles.row },
-            h('input', {
-              type: 'checkbox',
-              checked: hideDashboard,
-              onChange: (event) => setHideDashboard(event.target.checked),
-            }),
-            h('span', { style: styles.label }, '关闭看板：隐藏侧边栏卡片'),
+            h(
+              'button',
+              {
+                type: 'button',
+                style: { ...styles.button, minWidth: '132px' },
+                onClick: () => setHideDashboard(!hideDashboard),
+              },
+              hideDashboard ? '侧边栏看板：已隐藏' : '侧边栏看板：显示中',
+            ),
+            h('span', { style: styles.hint }, '只藏那张卡，GPT 功能照旧'),
           ),
           h(
             'div',
-            { style: styles.hint },
-            '与「仅看板模式」互不影响：打开它只把侧边栏那张用量卡藏起来，ChatGPT 模型、codex 工具、会话授权照旧可用。保存后需禁用→启用插件完全生效。',
+            { style: styles.row },
+            h(
+              'button',
+              { type: 'button', style: styles.button, onClick: () => void saveDashboardSwitches(), disabled: busy },
+              busy ? '保存中…' : '保存看板设置',
+            ),
+            h('span', { style: styles.hint }, '点了保存才写入；看板卡片的显隐会立即生效'),
           ),
           h(
             'div',
@@ -2071,11 +2132,9 @@ window.__ModuleLoader__.load({
             return null
           }
         })()
-        // 输入框胶囊：仅看板模式开启时要能把它摘掉，所以保留 register 的句柄。
-        let toggleHandle = null
-        const disposeToggle = () => {
-          const handle = toggleHandle
-          toggleHandle = null
+        // ── 两个可随时开关的 UI：输入框胶囊、侧边栏用量卡 ──────────────
+        // 都保留 register 句柄，设置页保存后立即显隐，不需要重载插件。
+        const disposeHandle = (handle) => {
           try {
             if (handle && typeof handle.dispose === 'function') handle.dispose()
             else if (typeof handle === 'function') handle()
@@ -2083,36 +2142,82 @@ window.__ModuleLoader__.load({
             // 摘不掉也不影响其它 UI
           }
         }
-        slots.inject('conversation.input.left', () => {
-          toggleHandle = slots.register(
-            {
-              name: 'conversation.input.left',
-              id: 'codex-toggle',
-              order: 4,
-              inject: (sessionId) => {
-                const directory = resolveModelDirectory(ctx, sessionId)
-                return {
-                  sessionId,
-                  directoryStore: directory ? directory.store : null,
-                  loadModels: directory ? () => directory.load().catch(() => {}) : null,
-                  // 组件内的兜底解析器：slot 注入时机拿不到目录时也能自己再解析一次。
-                  resolveDirectory: () => resolveModelDirectory(ctx, sessionId),
-                }
-              },
-            },
-            (props) =>
-              h(CodexToggle, { ...(props || {}), locale: (props && props.locale) || localeService }),
+
+        const toggleMeta = {
+          name: 'conversation.input.left',
+          id: 'codex-toggle',
+          order: 4,
+          inject: (sessionId) => {
+            const directory = resolveModelDirectory(ctx, sessionId)
+            return {
+              sessionId,
+              directoryStore: directory ? directory.store : null,
+              loadModels: directory ? () => directory.load().catch(() => {}) : null,
+              // 组件内的兜底解析器：slot 注入时机拿不到目录时也能自己再解析一次。
+              resolveDirectory: () => resolveModelDirectory(ctx, sessionId),
+            }
+          },
+        }
+        const toggleComponent = (props) =>
+          h(CodexToggle, { ...(props || {}), locale: (props && props.locale) || localeService })
+        const registerToggle = () => {
+          if (uiControls.toggleHandle) return
+          slots.inject('conversation.input.left', () => {
+            uiControls.toggleHandle = slots.register(toggleMeta, toggleComponent)
+            return uiControls.toggleHandle
+          })
+        }
+
+        const cardMeta = {
+          name: 'sidebar.footer.action',
+          id: 'dsh-codex-usage',
+          order: 101,
+          label: 'ChatGPT usage',
+        }
+        const cardComponent = (props) =>
+          h(
+            CardBoundary,
+            null,
+            h(CodexUsageCard, { wide: props && props.wide, locale: (props && props.locale) || localeService }),
           )
-          return toggleHandle
-        })
-        // 读一次配置：仅看板模式下不保留输入框胶囊（GPT 相关 UI 全部让位给看板）。
+        const registerCard = () => {
+          if (uiControls.cardHandle) return
+          slots.inject('sidebar.footer.action', () => {
+            uiControls.cardHandle = slots.register(cardMeta, cardComponent)
+            return uiControls.cardHandle
+          })
+        }
+
+        uiControls.setCardVisible = (visible) => {
+          if (visible) {
+            registerCard()
+            return
+          }
+          const handle = uiControls.cardHandle
+          uiControls.cardHandle = null
+          disposeHandle(handle)
+        }
+        uiControls.setToggleVisible = (visible) => {
+          if (visible) {
+            registerToggle()
+            return
+          }
+          const handle = uiControls.toggleHandle
+          uiControls.toggleHandle = null
+          disposeHandle(handle)
+        }
+
+        registerToggle()
+        registerCard()
+        // 读一次配置：仅看板模式摘掉胶囊，「关闭看板」摘掉卡片。
         if (typeof fetch === 'function') {
           Promise.resolve()
             .then(() => fetch(API + '?meta=1', { headers: { Accept: 'application/json' }, cache: 'no-store' }))
             .then((response) => (response && response.ok ? response.json() : null))
             .then((data) => {
-              if (data && data.dashboardOnly === true) disposeToggle()
-              if (data && data.hideDashboard === true) disposeCard()
+              if (!data) return
+              if (data.dashboardOnly === true) uiControls.setToggleVisible(false)
+              if (data.hideDashboard === true) uiControls.setCardVisible(false)
             })
             .catch(() => {
               // 读不到就保持默认（胶囊/卡片留着，用户可再打开设置检查）
@@ -2129,35 +2234,6 @@ window.__ModuleLoader__.load({
             (props) => h(CodexSettings, { locale: (props && props.locale) || localeService }),
           ),
         )
-        // 侧边栏用量卡：「关闭看板」开关打开时把它摘掉（只影响看板，不影响 GPT 功能）。
-        let cardHandle = null
-        const disposeCard = () => {
-          const handle = cardHandle
-          cardHandle = null
-          try {
-            if (handle && typeof handle.dispose === 'function') handle.dispose()
-            else if (typeof handle === 'function') handle()
-          } catch {
-            // 摘不掉也不影响其它 UI
-          }
-        }
-        slots.inject('sidebar.footer.action', () => {
-          cardHandle = slots.register(
-            {
-              name: 'sidebar.footer.action',
-              id: 'dsh-codex-usage',
-              order: 101,
-              label: 'ChatGPT usage',
-            },
-            (props) =>
-              h(
-                CardBoundary,
-                null,
-                h(CodexUsageCard, { wide: props && props.wide, locale: (props && props.locale) || localeService }),
-              ),
-          )
-          return cardHandle
-        })
       },
     }
   },

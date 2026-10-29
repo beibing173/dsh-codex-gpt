@@ -177,3 +177,12 @@ test('设置页有「仅看板模式」开关，且开启时隐藏 GPT 区块', 
   assert.ok(guards >= 4, '应有 4 个 GPT 区块被 dashboardOnly 包裹，实际 ' + guards)
   assert.ok(source.includes("dashboardOnly: dashboardOnly(),") === false || true)
 })
+
+test('看板开关是可点击按钮 + 独立保存按钮（保存后才写入，并立即应用显隐）', () => {
+  assert.ok(source.includes('仅看板模式：已开启'), '缺少仅看板模式的开关态文案')
+  assert.ok(source.includes('侧边栏看板：已隐藏'), '缺少看板卡片开关态文案')
+  assert.ok(source.includes('保存看板设置'), '缺少独立保存按钮')
+  assert.ok(source.includes('saveDashboardSwitches'), '缺少独立保存逻辑')
+  assert.ok(source.includes('uiControls.setCardVisible'), '保存后应能立即切换卡片显隐')
+  assert.ok(source.includes('uiControls.setToggleVisible'), '保存后应能立即切换胶囊显隐')
+})
