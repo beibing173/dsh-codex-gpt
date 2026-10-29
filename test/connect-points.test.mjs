@@ -104,3 +104,23 @@ test('cards：卡片把 Trae / WorkBuddy 接进了切换列表（端点与 provi
   assert.ok(source.includes("providers: ['trae', 'trae-enterprise']"), 'Trae provider 未登记')
   assert.ok(source.includes("providers: ['workbuddy', 'workbuddy-global']"), 'WorkBuddy provider 未登记')
 })
+
+test('企业版读不到个人积分时返回 null（不显示成 0）', () => {
+  const doc = {
+    status: 'signed-in',
+    creditsUnavailable: 'enterprise',
+    credits: { total: 0, available: 0, workAvailable: 0, generalAvailable: 0 },
+  }
+  assert.equal(parse('trae', doc), null)
+})
+
+test('第三方积分的加载用独立请求序号（不能和供应商列表互相丢弃结果）', () => {
+  assert.ok(source.includes('const connectSeq = useRef(0)'), '缺少独立序号')
+  const start = source.indexOf('const loadConnectPoints = useCallback')
+  const end = source.indexOf('const loadPreferred = useCallback', start)
+  assert.ok(start > 0 && end > start, '定位不到 loadConnectPoints')
+  const body = source.slice(start, end)
+  assert.ok(body.includes('connectSeq.current'), '应该用 connectSeq')
+  assert.equal(body.includes('providersSeq.current'), false, '不应和供应商列表共用序号')
+  assert.ok(body.includes('AbortSignal.timeout'), '应有请求超时，避免卡住刷新')
+})

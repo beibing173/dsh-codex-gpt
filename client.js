@@ -524,6 +524,8 @@ window.__ModuleLoader__.load({
      */
     function parseConnectPoints(id, doc) {
       if (!doc || typeof doc !== 'object' || doc.status !== 'signed-in') return null
+      // 企业版读不到个人积分（插件自己标了 creditsUnavailable）：不显示这一页，别显示成 0。
+      if (doc.creditsUnavailable) return null
       const credits = doc.credits && typeof doc.credits === 'object' ? doc.credits : null
       if (!credits) return null
       const num = (value) => (Number.isFinite(Number(value)) ? Number(value) : null)
@@ -786,6 +788,8 @@ window.__ModuleLoader__.load({
       const dashboardSeq = useRef(0)
       const chatgptSeq = useRef(0)
       const providersSeq = useRef(0)
+      // 第三方积分单独一个序号：和 providers 共用会在并发时互相丢弃结果。
+      const connectSeq = useRef(0)
 
       /** 本插件自己的 ChatGPT 用量。 */
       const loadChatgpt = useCallback(async () => {
@@ -822,11 +826,13 @@ window.__ModuleLoader__.load({
 
       /** 读取 Trae / WorkBuddy 的积分（各自的只读 usage 端点，未安装/未登录就跳过）。 */
       const loadConnectPoints = useCallback(async () => {
-        const seq = ++providersSeq.current
+        const seq = ++connectSeq.current
         const results = await Promise.all(
           CONNECT_PLUGINS.map(async (plugin) => {
             try {
               const response = await fetch(plugin.path, {
+                // 超时兜底：某个插件不响应时不能把整张卡片的刷新卡住。
+                signal: typeof AbortSignal !== 'undefined' && AbortSignal.timeout ? AbortSignal.timeout(8000) : undefined,
                 headers: { Accept: 'application/json' },
                 cache: 'no-store',
               })
@@ -838,7 +844,7 @@ window.__ModuleLoader__.load({
             }
           }),
         )
-        if (!mounted.current || seq !== providersSeq.current) return
+        if (!mounted.current || seq !== connectSeq.current) return
         const next = {}
         for (const [id, value] of results) {
           if (value) next[id] = value
