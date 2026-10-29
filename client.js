@@ -514,9 +514,9 @@ window.__ModuleLoader__.load({
     /** 侧边栏底部用量卡片：可在 ChatGPT / DeepSeek / 其它已配置的 AI 之间切换。 */
     const USAGE_ACCOUNTS_PATH = '/api/deepseek-usage/accounts'
     /**
-     * 第三方 connect 插件（WorkBuddy / Trae）的只读用量端点。
+     * 第三方 connect 插件（WorkBuddy / Trae / Qoder）的只读用量端点。
      * 它们各自暴露 `/plugins/<id>/usage`，返回里带 credits；卡片直接读，不复制它们的登录逻辑。
-     * 数组顺序决定卡片里的排列：WorkBuddy 在前、Trae 在后（两者都排在其它 AI 之后）。
+     * 数组顺序决定卡片里的排列：都排在「其它 AI」之后，顺序为 WorkBuddy → Trae → Qoder。
      */
     const CONNECT_PLUGINS = [
       {
@@ -526,6 +526,7 @@ window.__ModuleLoader__.load({
         providers: ['workbuddy', 'workbuddy-global'],
       },
       { id: 'trae', label: 'Trae', path: '/plugins/dsh-connect-trae/usage', providers: ['trae', 'trae-enterprise'] },
+      { id: 'qoder', label: 'Qoder', path: '/plugins/dsh-connect-qoder/usage', providers: ['qoder', 'qoder-global'] },
     ]
 
     /**
@@ -564,6 +565,19 @@ window.__ModuleLoader__.load({
           total,
           sub: soon && soon > 0 ? `即将过期 ${soon}` : '',
           checkin: doc.checkin && doc.checkin.todayCheckedIn ? '今日已签到' : '',
+        }
+      }
+      // Qoder（@dmh2002/dsh-connect-qoder）的 credits 形状与 WorkBuddy 一致：total + packages + expiringSoon。
+      if (id === 'qoder') {
+        const total = num(credits.total)
+        if (total === null) return null
+        const soon = num(credits.expiringSoon)
+        return {
+          id,
+          label: 'Qoder',
+          total,
+          sub: soon && soon > 0 ? `即将过期 ${soon}` : '',
+          checkin: '',
         }
       }
       return null

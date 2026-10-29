@@ -22,10 +22,10 @@
 | 会话级授权胶囊（输入框左侧按钮） | ✅ | `client.js`（`CodexToggle`） |
 | `deepseek_delegate` 轻任务委派（走 DSH 授权，非裸 API） | ✅ | `index.js` 的 `runDeepSeek`（`ctx.llm.stream`） |
 | 侧边栏用量看板（多 AI 切换） | ✅ | `client.js`（`CodexUsageCard`） |
-| 看板页顺序：**DeepSeek → ChatGPT → 其它 AI → WorkBuddy → Trae** | ✅ | `CONNECT_PLUGINS` 顺序 + `tabs` |
+| 看板页顺序：**DeepSeek → ChatGPT → 其它 AI → WorkBuddy → Trae → Qoder** | ✅ | `CONNECT_PLUGINS` 顺序 + `tabs` |
 | ChatGPT 限额页（5h/每周/订阅/重置卡） | ✅ | `usage.js`、`codex.js` |
 | DeepSeek 余额页（10s 刷新、`—` 而非 0、峰谷倒计时） | ✅ | `deepseek.js`、`index.js` 的 `readDeepseekBalanceCached` |
-| Trae / WorkBuddy 积分页 | ✅ | `client.js` 的 `parseConnectPoints` + 两个只读端点 |
+| Trae / WorkBuddy / Qoder 积分页 | ✅ | `client.js` 的 `parseConnectPoints` + 三个只读端点（`/plugins/<id>/usage`） |
 | 「仅看板模式」开关（关掉 GPT 功能） | ✅ | `dashboardOnly` 配置 + 宿主注册处 `if (!dashboardOnly())` |
 | 「关闭看板」开关（只藏卡片） | ✅ | `hideDashboard` 配置 + `uiControls` 运行时显隐 |
 | 看板开关按钮 + 独立「保存看板设置」 | ✅ | `saveDashboardSwitches`（保存后立即生效，不用重载） |

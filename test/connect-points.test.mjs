@@ -92,6 +92,26 @@ test('WorkBuddy：total 就是剩余合计，附带即将过期提示', () => {
   assert.match(points.checkin, /签到/)
 })
 
+test('Qoder：credits 形状与 WorkBuddy 一致（total + expiringSoon）', () => {
+  const doc = {
+    status: 'signed-in',
+    accountName: 'tester',
+    credits: {
+      total: 100,
+      packages: [{ packageName: 'addon', remain: 100, size: 100, monthly: false, expiresAtMs: 253402214400000 }],
+      expiringSoon: 40,
+      nearestExpiryMs: 253402214400000,
+    },
+  }
+  const points = parse('qoder', doc)
+  assert.ok(points, 'Qoder 应能解析出积分')
+  assert.equal(points.label, 'Qoder')
+  assert.equal(points.total, 100)
+  assert.match(points.sub, /40/)
+  // 未登录不显示
+  assert.equal(parse('qoder', { status: 'signed-out' }), null)
+})
+
 test('未登录 / 形状不对时返回 null（卡片不显示 0 误导）', () => {
   assert.equal(parse('trae', { status: 'signed-out' }), null)
   assert.equal(parse('trae', { status: 'signed-in' }), null)
@@ -140,6 +160,9 @@ test('卡片页顺序：DeepSeek → ChatGPT → 其它 AI → WorkBuddy → Tra
   assert.ok(wb >= 0 && te >= 0, 'connect 配置缺少 workbuddy / trae')
   assert.ok(wb < te, 'WorkBuddy 应排在 Trae 之前')
   assert.ok(tabsBlock.indexOf('CONNECT_PLUGINS') > tabsBlock.indexOf('for (const row of rows)'), '第三方积分应排在其它 AI 之后')
+  // Qoder 也走同一套 connect 机制
+  assert.ok(source.includes('/plugins/dsh-connect-qoder/usage'), '缺少 Qoder 用量端点')
+  assert.ok(source.includes("providers: ['qoder', 'qoder-global']"), 'Qoder provider 未登记')
 })
 
 test('积分显示：浮点噪声要圆掉，整数不补 0，空值显示 —', () => {
