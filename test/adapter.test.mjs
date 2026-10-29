@@ -80,8 +80,16 @@ test('adapter: providerInfo / listModels / resolveModel', async () => {
   assert.equal(resolved.context.contextWindow, 272000)
   assert.equal(resolved.defaultMaxTokens, 64000)
   assert.ok(Array.isArray(resolved.reasoning.efforts))
-  assert.equal(resolved.reasoning.defaultEffort, 'medium')
-  assert.ok(resolved.reasoning.efforts.some((effort) => effort.id === 'high'))
+  assert.equal(resolved.reasoning.defaultEffort, 'high')
+  const effortIds = resolved.reasoning.efforts.map((effort) => effort.id)
+  assert.deepEqual(effortIds, ['off', 'low', 'high', 'max'])
+})
+
+test('buildRequestBody: 思考档位映射到 Codex（max→xhigh，off 不传）', () => {
+  const maxBody = buildRequestBody({ model: 'gpt-5.6-sol', messages: [], reasoningEffort: 'max' })
+  assert.deepEqual(maxBody.reasoning, { effort: 'xhigh', summary: 'auto' })
+  const offBody = buildRequestBody({ model: 'gpt-5.6-sol', messages: [], reasoningEffort: 'off' })
+  assert.equal(offBody.reasoning, undefined)
 })
 
 test('adapter: stream 把 SSE 转成 DSH StreamChunk', async (t) => {

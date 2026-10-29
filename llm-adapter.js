@@ -9,14 +9,16 @@
  */
 export const PROVIDER_ID = 'chatgpt-codex'
 const PROVIDER_NAME = 'ChatGPT'
-/** 思考强度档位（Codex 后端支持 low/medium/high/xhigh）。 */
+/** 思考强度档位：与 DSH 官方（DeepSeek）一致的 Off / Low / High / Max。 */
 export const REASONING_EFFORTS = [
-  { id: 'low', name: '低', description: '更快，思考更少' },
-  { id: 'medium', name: '中', description: '平衡速度与深度（默认）' },
-  { id: 'high', name: '高', description: '更深入的推理' },
-  { id: 'xhigh', name: '极高', description: '最深入的推理，最慢' },
+  { id: 'off', name: 'Off', description: '不进行思考' },
+  { id: 'low', name: 'Low', description: '更快，思考更少' },
+  { id: 'high', name: 'High', description: '更深入的推理（默认）' },
+  { id: 'max', name: 'Max', description: '最深入的推理，最慢' },
 ]
-const DEFAULT_REASONING_EFFORT = 'medium'
+const DEFAULT_REASONING_EFFORT = 'high'
+/** DSH 档位 → Codex 后端 reasoning.effort。off 不传 reasoning。 */
+const EFFORT_TO_CODEX = { low: 'low', high: 'high', max: 'xhigh' }
 const RESPONSES_URL = 'https://chatgpt.com/backend-api/codex/responses'
 const DEFAULT_CONTEXT_WINDOW = 272000
 const DEFAULT_MAX_TOKENS = 64000
@@ -556,8 +558,9 @@ export function buildRequestBody(options) {
           tool.parameters && typeof tool.parameters === 'object' ? tool.parameters : { type: 'object', properties: {} },
       }))
   }
-  if (options?.reasoningEffort && options.reasoningEffort !== 'off') {
-    body.reasoning = { effort: options.reasoningEffort, summary: 'auto' }
+  const effort = options?.reasoningEffort ? EFFORT_TO_CODEX[options.reasoningEffort] : undefined
+  if (effort) {
+    body.reasoning = { effort, summary: 'auto' }
   }
   if (Number.isFinite(options?.maxTokens) && Number(options.maxTokens) > 0) {
     body.max_output_tokens = Math.trunc(Number(options.maxTokens))
