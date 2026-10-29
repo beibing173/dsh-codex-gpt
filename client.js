@@ -1676,6 +1676,11 @@ window.__ModuleLoader__.load({
             { style: styles.hint },
             '开启后关闭 ChatGPT 模型、codex 工具、会话授权与凭证同步，设置页只留看板相关项。默认关闭；保存后需禁用→启用插件完全生效。',
           ),
+          h(
+            'div',
+            { style: styles.hint },
+            '如果你觉得这个做的不好看，可以向我提 issues 或 PR；也可以试一下同类兼容的看板：https://github.com/dougen/dsh-deepseek-usage',
+          ),
         ),
         // ── 插件版本 ────────────────────────────────────────────────
         h(
