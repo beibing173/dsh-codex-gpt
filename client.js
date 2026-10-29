@@ -568,16 +568,23 @@ window.__ModuleLoader__.load({
         }
       }
       // Qoder（@dmh2002/dsh-connect-qoder）的 credits 形状与 WorkBuddy 一致：total + packages + expiringSoon。
+      // 注意：Qoder 的签到状态在 pool.accounts[] 里（checkedInToday），不在顶层 checkin 字段。
       if (id === 'qoder') {
         const total = num(credits.total)
         if (total === null) return null
         const soon = num(credits.expiringSoon)
+        const poolAccounts = doc.pool && Array.isArray(doc.pool.accounts) ? doc.pool.accounts : []
+        const self =
+          poolAccounts.find((row) => row && (row.current === true || row.accountId === doc.accountId)) || poolAccounts[0]
+        let checkin = ''
+        if (self && self.checkedInToday === true) checkin = '今日已签到'
+        else if (self && self.checkedInToday === false) checkin = '今日未签到'
         return {
           id,
           label: 'Qoder',
           total,
           sub: soon && soon > 0 ? `即将过期 ${soon}` : '',
-          checkin: '',
+          checkin,
         }
       }
       return null

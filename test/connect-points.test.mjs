@@ -108,6 +108,24 @@ test('Qoder：credits 形状与 WorkBuddy 一致（total + expiringSoon）', () 
   assert.equal(points.label, 'Qoder')
   assert.equal(points.total, 100)
   assert.match(points.sub, /40/)
+  // 签到状态在 pool.accounts[] 里
+  const withCheckin = parse('qoder', {
+    status: 'signed-in',
+    accountId: 'pat-1',
+    credits: { total: 100, expiringSoon: 0 },
+    pool: { accounts: [{ accountId: 'pat-1', current: true, checkedInToday: true }] },
+  })
+  assert.match(withCheckin.checkin, /已签到/, '应显示已签到')
+  const notChecked = parse('qoder', {
+    status: 'signed-in',
+    accountId: 'pat-1',
+    credits: { total: 100, expiringSoon: 0 },
+    pool: { accounts: [{ accountId: 'pat-1', current: true, checkedInToday: false }] },
+  })
+  assert.match(notChecked.checkin, /未签到/, '应显示未签到')
+  // 上游没给 checkedInToday 时不要编状态
+  const unknown = parse('qoder', { status: 'signed-in', credits: { total: 100 }, pool: { accounts: [{}] } })
+  assert.equal(unknown.checkin, '')
   // 未登录不显示
   assert.equal(parse('qoder', { status: 'signed-out' }), null)
 })
