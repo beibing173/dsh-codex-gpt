@@ -403,6 +403,8 @@ window.__ModuleLoader__.load({
       const [allowLan, setAllowLan] = useState(false)
       const [delegateLight, setDelegateLight] = useState(false)
       const [deepseekModel, setDeepseekModel] = useState('')
+      const [deepseekModels, setDeepseekModels] = useState([])
+      const [deepseekModelsError, setDeepseekModelsError] = useState('')
       const [models, setModels] = useState([])
       const [modelsError, setModelsError] = useState('')
       const [error, setError] = useState('')
@@ -440,6 +442,20 @@ window.__ModuleLoader__.load({
         }
       }, [])
 
+      /** DeepSeek 侧模型列表（供「轻任务委派」选择，支持自动选择）。 */
+      const loadDeepseekModels = useCallback(async () => {
+        try {
+          const data = await request(API + '?deepseekModels=1', {
+            headers: { Accept: 'application/json' },
+            cache: 'no-store',
+          })
+          setDeepseekModels(Array.isArray(data.models) ? data.models : [])
+          setDeepseekModelsError(data.error || '')
+        } catch (deepseekFailure) {
+          setDeepseekModelsError(String(deepseekFailure.message || deepseekFailure))
+        }
+      }, [])
+
       const loadAll = useCallback(async () => {
         try {
           const data = await loadState('')
@@ -456,10 +472,11 @@ window.__ModuleLoader__.load({
             await loadModels(false)
             await loadResets()
           }
+          await loadDeepseekModels()
         } catch (loadFailure) {
           setError(String(loadFailure.message || loadFailure))
         }
-      }, [loadModels, loadResets])
+      }, [loadModels, loadResets, loadDeepseekModels])
 
       useEffect(() => {
         void loadAll()
@@ -765,11 +782,10 @@ window.__ModuleLoader__.load({
                 onChange: (event) => setDefaultModel(event.target.value),
                 disabled: !loggedIn,
               },
+              h('option', { value: '' }, '自动选择（可用列表第一个）'),
               modelOptions.length === 0
-                ? h('option', { value: '' }, '登录后自动获取')
-                : modelOptions.map((slug) =>
-                    h('option', { key: slug, value: slug }, slug),
-                  ),
+                ? h('option', { value: '__none__', disabled: true }, '登录后自动获取')
+                : modelOptions.map((slug) => h('option', { key: slug, value: slug }, slug)),
             ),
             h(
               'button',
@@ -836,20 +852,24 @@ window.__ModuleLoader__.load({
                 'div',
                 { style: styles.row },
                 h('span', { style: styles.label }, 'DeepSeek 模型'),
-                h('input', {
-                  value: deepseekModel,
-                  placeholder: '留空自动选择（可填 deepseek-v4.1-flash 等）',
-                  onChange: (event) => setDeepseekModel(event.target.value),
-                  style: {
-                    flex: 1,
-                    padding: '6px 10px',
-                    borderRadius: '8px',
-                    border: '1px solid rgba(124,199,255,.35)',
-                    background: 'transparent',
-                    color: 'inherit',
-                    fontSize: '13px',
+                h(
+                  'select',
+                  {
+                    style: styles.select,
+                    value: deepseekModel,
+                    onChange: (event) => setDeepseekModel(event.target.value),
                   },
-                }),
+                  h('option', { value: '' }, '自动选择（V4.1 优先）'),
+                  deepseekModel && !deepseekModels.some((item) => item.id === deepseekModel)
+                    ? h('option', { value: deepseekModel }, deepseekModel)
+                    : null,
+                  deepseekModels.length === 0
+                    ? h('option', { value: '__none__', disabled: true }, deepseekModelsError || '加载中…')
+                    : deepseekModels.map((item) =>
+                        h('option', { key: item.id, value: item.id }, item.name || item.id),
+                      ),
+                ),
+                h('button', { type: 'button', style: styles.button, onClick: loadDeepseekModels }, '刷新'),
               )
             : null,
           h(

@@ -308,10 +308,13 @@ export function apply(ctx, config) {
     Object.assign(localOverrides, patch)
   }
 
+  /** 自动选择的模型 id：最近一次拉取的可用列表第一个（用户没显式选模型时用它）。 */
+  let autoModelId = ''
+
   const defaultModel = () => {
     const raw = readValue('defaultModel')
     const model = typeof raw === 'string' ? raw.trim() : ''
-    return model || DEFAULT_MODEL
+    return model || autoModelId || DEFAULT_MODEL
   }
   const autoConsult = () => readValue('autoConsult') !== false
   const allowLanAccess = () => readValue('allowLanAccess') === true
@@ -346,6 +349,8 @@ export function apply(ctx, config) {
         accountId: credential.accountId,
       })
       modelsCache = { at: Date.now(), models, error: '' }
+      // 自动选择：记住可用列表第一个，用户选「自动选择」时用它。
+      if (models[0] && models[0].slug) autoModelId = models[0].slug
       return { models, error: '' }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
@@ -839,6 +844,21 @@ export function apply(ctx, config) {
           }
           const { models, error } = await getModels(credential, false)
           sendJson(res, 200, { ok: true, models, error })
+          return
+        }
+        if (url.searchParams.get('deepseekModels') === '1') {
+          try {
+            const provider = deepseekProvider()
+            const models = await ctx.llm.listModels(provider)
+            sendJson(res, 200, { ok: true, provider, models })
+          } catch (error) {
+            sendJson(res, 200, {
+              ok: true,
+              provider: '',
+              models: [],
+              error: error instanceof Error ? error.message : String(error),
+            })
+          }
           return
         }
         if (url.searchParams.get('resets') === '1') {
