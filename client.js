@@ -241,6 +241,16 @@ window.__ModuleLoader__.load({
       return ''
     }
 
+    /** unix 秒 → 本地「MM-DD HH:mm」，用于窗口重置时间提示。 */
+    function formatReset(value) {
+      const number = Number(value)
+      if (!Number.isFinite(number) || number <= 0) return ''
+      const date = new Date(number * 1000)
+      if (Number.isNaN(date.getTime())) return ''
+      const pad = (input) => String(input).padStart(2, '0')
+      return `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`
+    }
+
     const usageStyles = {
       card: {
         display: 'flex',
@@ -349,10 +359,19 @@ window.__ModuleLoader__.load({
             ? h('span', { style: { marginLeft: 'auto', fontSize: '10px', opacity: 0.55 } }, `${resetCredits} 次重置`)
             : null,
         ),
-        ...windows.map((window) =>
-          h(
+        ...windows.map((window) => {
+          const used = Math.max(0, Math.min(100, Number(window.usedPercent) || 0))
+          const remaining = 100 - used
+          const low = remaining <= 15
+          return h(
             'div',
-            { key: window.id || window.label, style: usageStyles.row },
+            {
+              key: window.id || window.label,
+              style: usageStyles.row,
+              title: `${window.label || ''}：已用 ${Math.round(used)}%，剩余 ${Math.round(remaining)}%${
+                window.resetAt ? `，${formatReset(window.resetAt)} 重置` : ''
+              }`,
+            },
             h('span', { style: usageStyles.label }, window.label || ''),
             h(
               'div',
@@ -360,17 +379,14 @@ window.__ModuleLoader__.load({
               h('div', {
                 style: {
                   ...usageStyles.fill,
-                  width: `${Math.max(0, Math.min(100, Number(window.usedPercent) || 0))}%`,
-                  background:
-                    Number(window.usedPercent) >= 85
-                      ? '#d9534f'
-                      : 'var(--dsw-specific-accent, #4d6bfe)',
+                  width: `${remaining}%`,
+                  background: low ? '#d9534f' : 'var(--dsw-specific-accent, #4d6bfe)',
                 },
               }),
             ),
-            h('span', { style: usageStyles.percent }, `${Math.round(Number(window.usedPercent) || 0)}%`),
-          ),
-        ),
+            h('span', { style: usageStyles.percent }, `剩 ${Math.round(remaining)}%`),
+          )
+        }),
         untilText ? h('div', { style: usageStyles.hint }, untilText) : null,
       )
     }
