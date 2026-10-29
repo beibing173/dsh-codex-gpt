@@ -831,3 +831,61 @@ test('快照里的 currentModel 跟随 DSH 的 agentDefaultModel（auto 模式�
   const next = await callApi(harness, {})
   assert.equal(next.json.global.currentModel.provider, 'openai-codex')
 })
+test('logout 会清掉镜像给用量插件的凭证（token 不能活得比登录久）', async (t) => {
+  const original = globalThis.fetch
+  t.after(() => {
+    globalThis.fetch = original
+  })
+  globalThis.fetch = mockBackend()
+
+  clearAuth()
+  const record = makeAuthRecord()
+  writeAuth(record)
+  const store = new Map()
+  const unsetCalls = []
+  const credentials = {
+    async set(ref, value) {
+      store.set(ref, value)
+    },
+    async resolve(ref) {
+      return store.has(ref) ? { value: store.get(ref) } : undefined
+    },
+    async unset(ref) {
+      unsetCalls.push(ref)
+      store.delete(ref)
+    },
+  }
+  const harness = createHarness({}, { credentials })
+
+  await callApi(harness, {})
+  await new Promise((resolve) => setTimeout(resolve, 30))
+  assert.ok(store.has('DSH_USAGE_CODEX_OAUTH_TOKEN'), '先同步成功才有东西可清')
+
+  const out = await callApi(harness, { method: 'POST', body: { op: 'logout' } })
+  assert.equal(out.status, 200)
+  assert.ok(unsetCalls.includes('DSH_USAGE_CODEX_OAUTH_TOKEN'), '登出必须清镜像 token')
+  assert.ok(unsetCalls.includes('DSH_USAGE_CODEX_ACCOUNT_ID'), '登出必须清镜像账号 id')
+  assert.equal(store.has('DSH_USAGE_CODEX_OAUTH_TOKEN'), false)
+
+  clearAuth()
+})
+
+test('GET ?meta=1 只回当前模型与默认 tab，不含邮箱/套餐/写令牌', async () => {
+  const harness = await createHarness({}, { agentDefaultModel: { currentSelection: () => ({ provider: 'deepseek-account', model: 'deepseek-flash' }) } })
+  const res = await callApi(harness, { url: '/dsh-codex-api?meta=1' })
+  assert.equal(res.status, 200)
+  assert.deepEqual(res.json.currentModel, { provider: 'deepseek-account', model: 'deepseek-flash' })
+  assert.equal(res.json.defaultUsageTab, 'auto')
+  const text = JSON.stringify(res.json)
+  assert.equal(text.includes('writeToken'), false, 'meta 不能带写令牌')
+  assert.equal(text.includes('email'), false, 'meta 不能带邮箱')
+  assert.equal(text.includes('auth'), false, 'meta 不能带完整 auth 段')
+})
+
+test('不支持的请求方法一律 405（不能靠 PUT/PATCH 绕过写令牌）', async () => {
+  const harness = await createHarness()
+  for (const method of ['PUT', 'PATCH', 'DELETE']) {
+    const res = await callApi(harness, { method })
+    assert.equal(res.status, 405, `${method} 应被拒绝`)
+  }
+})

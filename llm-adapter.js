@@ -94,7 +94,7 @@ export function createCodexGptAdapter(opts) {
           modelsCache = { at: now(), models }
           if (modelsStore && typeof modelsStore.save === 'function') {
             try {
-              modelsStore.save(models)
+              modelsStore.save(models, credential && credential.accountId)
             } catch {
               // 写盘失败不影响本次目录
             }
@@ -111,7 +111,29 @@ export function createCodexGptAdapter(opts) {
     return modelsInflight
   }
 
+  /** 换账号时丢掉上一账号的落盘/内存目录，避免把别人的模型列表显示出来。 */
+  function ensureAccountCache(credential) {
+    if (!modelsStore || typeof modelsStore.accountKeyOf !== 'function') return
+    const expected = modelsStore.accountKeyOf(credential && credential.accountId)
+    if (!expected) return
+    let stored = ''
+    try {
+      stored = typeof modelsStore.storedAccountKey === 'function' ? modelsStore.storedAccountKey() : ''
+    } catch {
+      stored = ''
+    }
+    if (stored && stored !== expected) {
+      modelsCache = { at: 0, models: [] }
+      try {
+        if (typeof modelsStore.clear === 'function') modelsStore.clear()
+      } catch {
+        // 清理失败也不该阻断
+      }
+    }
+  }
+
   async function loadModels(credential) {
+    ensureAccountCache(credential)
     if (modelsCache.models.length > 0 && now() - modelsCache.at < MODELS_TTL_MS) {
       return modelsCache.models
     }
@@ -150,9 +172,6 @@ export function createCodexGptAdapter(opts) {
 
   async function listModels(provider) {
     assertProvider(provider)
-    const cached = modelsCache.models
-    const fresh = cached.length > 0 && now() - modelsCache.at < MODELS_TTL_MS
-
     // 列模型绝不能让 UI 等网络：凭证只要旧的就够，禁止在这里触发 token 刷新。
     let credential
     try {
@@ -161,6 +180,10 @@ export function createCodexGptAdapter(opts) {
       credential = undefined
     }
     const hasCredential = Boolean(credential && credential.accessToken)
+    // 换账号时先丢掉上一账号的目录，再决定返回什么（否则会把别人的模型列给新账号）。
+    if (hasCredential) ensureAccountCache(credential)
+    const cached = modelsCache.models
+    const fresh = cached.length > 0 && now() - modelsCache.at < MODELS_TTL_MS
 
     // 有目录就立刻返回；过期则后台续期（stale-while-revalidate）。
     // 关键：返回的目录永远包含兜底/已配置模型，刷新失败也不会让用户选中的模型"消失"。

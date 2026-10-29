@@ -333,3 +333,46 @@ test('modelsCache: 启动即用上次落盘的目录，刷新成功后再写回'
   const next = await adapter.listModels(PROVIDER_ID)
   assert.deepEqual(next.map((model) => model.id), ['gpt-new', 'gpt-5.6-sol'])
 })
+
+test('modelsCache: 换账号后丢弃上一账号的落盘目录（不跨账号复用）', async () => {
+  const crypto = await import('node:crypto')
+  const keyOf = (accountId) => {
+    const raw = typeof accountId === 'string' ? accountId.trim() : ''
+    if (!raw) return ''
+    return crypto.createHash('sha256').update(raw).digest('hex').slice(0, 32)
+  }
+  const accountA = keyOf('acct-A')
+  let stored = accountA
+  let cleared = 0
+  let savedKey = ''
+  let saved = null
+  const adapter = createCodexGptAdapter({
+    getCredential: async () => ({ accessToken: 'at', accountId: 'acct-B' }),
+    fetchModels: async () => [{ slug: 'gpt-b' }],
+    fallbackModel: 'gpt-5.6-sol',
+    modelsCache: {
+      load: () => [{ slug: 'gpt-a-only' }],
+      save: (models, accountId) => {
+        saved = models.map((model) => model.slug)
+        savedKey = keyOf(accountId)
+      },
+      accountKeyOf: keyOf,
+      storedAccountKey: () => stored,
+      clear: () => {
+        cleared += 1
+        stored = ''
+      },
+    },
+  })
+
+  // 账号从 A 换成 B：加载时必须丢掉 A 的目录，绝不能把 A 的模型展示给 B。
+  const list = await adapter.listModels(PROVIDER_ID)
+  const ids = list.map((model) => model.id)
+  assert.ok(!ids.includes('gpt-a-only'), '不应复用其他账号的模型目录')
+  assert.equal(cleared, 1, '换账号要清掉落盘缓存')
+  assert.deepEqual(ids, ['gpt-b', 'gpt-5.6-sol'])
+
+  await new Promise((resolve) => setTimeout(resolve, 20))
+  assert.deepEqual(saved, ['gpt-b'])
+  assert.equal(savedKey, keyOf('acct-B'), '写回时要带上当前账号指纹')
+})

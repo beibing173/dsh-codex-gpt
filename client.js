@@ -473,30 +473,38 @@ window.__ModuleLoader__.load({
       const [rows, setRows] = useState([])
       const [dashboard, setDashboard] = useState(null)
       const [tab, setTab] = useState('')
+      const [manualKey, setManualKey] = useState('')
       const [preferred, setPreferred] = useState('auto')
       const [currentModel, setCurrentModel] = useState(null)
       const [busy, setBusy] = useState(false)
       const [clock, setClock] = useState(() => Date.now())
       const mounted = useRef(true)
       const requestSeq = useRef(0)
+      // 每类数据独立的响应序列：慢响应回来不能覆盖新的。
+      const preferredSeq = useRef(0)
+      const dashboardSeq = useRef(0)
+      const chatgptSeq = useRef(0)
+      const providersSeq = useRef(0)
 
       /** 本插件自己的 ChatGPT 用量。 */
       const loadChatgpt = useCallback(async () => {
+        const seq = ++chatgptSeq.current
         try {
           const data = await request(API + '?usage=1', {
             headers: { Accept: 'application/json' },
             cache: 'no-store',
           })
-          if (!mounted.current) return
+          if (!mounted.current || seq !== chatgptSeq.current) return
           setUsage(data.usage && data.usage.available === true ? data.usage : null)
         } catch {
-          if (!mounted.current) return
+          if (!mounted.current || seq !== chatgptSeq.current) return
           setUsage(null)
         }
       }, [])
 
       /** 其它 AI 的余额/用量：借用量插件的只读接口（没装就静默降级为只有 ChatGPT）。 */
       const loadProviders = useCallback(async () => {
+        const seq = ++providersSeq.current
         try {
           const response = await fetch(USAGE_ACCOUNTS_PATH, {
             headers: { Accept: 'application/json' },
@@ -504,32 +512,67 @@ window.__ModuleLoader__.load({
           })
           if (!response.ok) return
           const data = await response.json()
-          if (!mounted.current) return
+          if (!mounted.current || seq !== providersSeq.current) return
           setRows(Array.isArray(data.accounts) ? data.accounts : [])
         } catch {
           // 静默：没有该插件时只显示 ChatGPT
         }
       }, [])
 
+      /**
+       * 跟随当前模型：走轻量 meta 端点（3 秒轮询），只回 { currentModel, defaultUsageTab }，
+       * 不拉完整快照（不重复暴露邮箱/套餐，也不触发凭证同步副作用）。
+       */
       const loadPreferred = useCallback(async () => {
+        const seq = ++preferredSeq.current
+        try {
+          const data = await request(API + '?meta=1', {
+            headers: { Accept: 'application/json' },
+            cache: 'no-store',
+          })
+          // 只有真正拿到 meta 形状才算成功：旧宿主不认 ?meta=1 时会返回完整快照，
+          // 那种响应没有顶层 currentModel，必须回退，否则会一直停在默认 tab。
+          const isMeta = data && data.ok === true && data.currentModel !== undefined && data.auth === undefined
+          if (isMeta) {
+            if (!mounted.current || seq !== preferredSeq.current) return
+            setCurrentModel(data.currentModel || null)
+            if (typeof data.defaultUsageTab === 'string' && data.defaultUsageTab) {
+              setPreferred(data.defaultUsageTab)
+            }
+            return
+          }
+          // 旧宿主不认 meta，直接把整份快照返回了：就地用它，免得再打一次。
+          if (data && data.ok === true && data.global) {
+            if (!mounted.current || seq !== preferredSeq.current) return
+            if (typeof data.global.defaultUsageTab === 'string' && data.global.defaultUsageTab) {
+              setPreferred(data.global.defaultUsageTab)
+            }
+            setCurrentModel(data.global.currentModel || null)
+            return
+          }
+        } catch {
+          // 网络失败走下面的完整快照回退
+        }
+        const full = ++preferredSeq.current
         try {
           const data = await loadState('')
-          if (!mounted.current) return
+          if (!mounted.current || full !== preferredSeq.current) return
           setPreferred((data.global && data.global.defaultUsageTab) || 'auto')
           setCurrentModel((data.global && data.global.currentModel) || null)
         } catch {
-          // 读不到配置就用 auto
+          // 读不到配置就保持上一次的值，别把 auto 打回 chatgpt
         }
       }, [])
 
       /** DeepSeek 余额 + 当前峰谷时段（本插件自己算，不依赖别的插件）。 */
       const loadDashboard = useCallback(async (force = false) => {
+        const seq = ++dashboardSeq.current
         try {
           const data = await request(API + '?dashboard=1' + (force ? '&force=1' : ''), {
             headers: { Accept: 'application/json' },
             cache: 'no-store',
           })
-          if (!mounted.current) return
+          if (!mounted.current || seq !== dashboardSeq.current) return
           setDashboard({ peak: data.peak || null, deepseek: data.deepseek || null })
         } catch {
           if (!mounted.current) return
@@ -588,16 +631,6 @@ window.__ModuleLoader__.load({
         }
       }, [loadDashboard, loadPreferred, reload, wide])
 
-      // 模型一换，就取消手动切换、回到「跟随当前模型」。
-      const lastModelKey = useRef('')
-      useEffect(() => {
-        const key = currentModel ? `${currentModel.provider}|${currentModel.model}` : ''
-        if (key && key !== lastModelKey.current) {
-          lastModelKey.current = key
-          setTab('')
-        }
-      }, [currentModel])
-
       /** 可切换的 AI 列表：ChatGPT 第一，DeepSeek 第二（本插件自己算），其余来自用量插件（若装了）。 */
       const tabs = useMemo(() => {
         const list = [
@@ -625,7 +658,10 @@ window.__ModuleLoader__.load({
       }, [currentModel, tabs])
 
       const preferredId = preferred === 'auto' ? autoTabId : preferred
-      const activeId = tabs.some((item) => item.id === tab)
+      // 手动覆盖只在「同一个模型」下有效：换模型就自动回到跟随，不会长期压住 auto。
+      const modelKey = currentModel ? `${currentModel.provider}|${currentModel.model}` : ''
+      const manualValid = Boolean(tab) && (!manualKey || manualKey === modelKey)
+      const activeId = manualValid && tabs.some((item) => item.id === tab)
         ? tab
         : tabs.some((item) => item.id === preferredId)
           ? preferredId
@@ -647,8 +683,9 @@ window.__ModuleLoader__.load({
         }
         // 只做临时覆盖，不写 localStorage：换模型时会自动回到「跟随当前模型」。
         setTab(next.id)
+        setManualKey(modelKey)
         await reload()
-      }, [activeId, reload, tabs])
+      }, [activeId, modelKey, reload, tabs])
 
       if (!wide) return null
 

@@ -12,10 +12,10 @@
  * 组成：`codex` 工具 + 每会话提示策略段 + `/dsh-codex-api` 状态/登录路由 + 本地 OAuth 回调。
  */
 import z from '@deepseek-ai/schemastery'
-import { readFileSync, writeFileSync, mkdirSync, renameSync } from 'node:fs'
+import { readFileSync, writeFileSync, mkdirSync, renameSync, unlinkSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { homedir, networkInterfaces } from 'node:os'
-import { randomBytes } from 'node:crypto'
+import { randomBytes, createHash } from 'node:crypto'
 import { callCodexBackend, fetchCodexModels, fetchResetCredits, consumeResetCredit } from './codex.js'
 import { getCodexUsage, __resetUsageCache } from './usage.js'
 import { fetchDeepseekBalance, peakState } from './deepseek.js'
@@ -425,19 +425,39 @@ export function apply(ctx, config) {
   const modelsCacheStore = (() => {
     const env = (typeof process !== 'undefined' && process.env) || {}
     const file = () => join(env.DSH_HOME || join(homedir(), '.dsh'), 'dsh-codex-models.json')
+    /** 缓存属于哪个账号（只存不可逆指纹，避免把账号标识明文落盘）。 */
+    const accountKeyOf = (accountId) => {
+      const raw = typeof accountId === 'string' ? accountId.trim() : ''
+      if (!raw) return ''
+      return createHash('sha256').update(raw).digest('hex').slice(0, 32)
+    }
+    const readPayload = () => {
+      try {
+        const parsed = JSON.parse(readFileSync(file(), 'utf8'))
+        return parsed && typeof parsed === 'object' ? parsed : null
+      } catch {
+        return null
+      }
+    }
     return {
+      accountKeyOf,
+      /** 落盘缓存记录的账号指纹（没有就是旧格式/未知）。 */
+      storedAccountKey() {
+        const parsed = readPayload()
+        return parsed && typeof parsed.accountKey === 'string' ? parsed.accountKey : ''
+      },
       load() {
         try {
-          const parsed = JSON.parse(readFileSync(file(), 'utf8'))
+          const parsed = readPayload()
           const models = parsed && Array.isArray(parsed.models) ? parsed.models : []
           return models.filter((model) => model && typeof model.slug === 'string' && model.slug)
         } catch {
           return []
         }
       },
-      save(models) {
+      save(models, accountId) {
         const target = file()
-        const payload = { version: 1, at: Date.now(), models }
+        const payload = { version: 2, at: Date.now(), accountKey: accountKeyOf(accountId), models }
         try {
           mkdirSync(dirname(target), { recursive: true })
           const tmp = `${target}.${process.pid}.tmp`
@@ -445,6 +465,14 @@ export function apply(ctx, config) {
           renameSync(tmp, target)
         } catch (error) {
           warn('模型目录缓存写入失败（不影响本次使用）', error)
+        }
+      },
+      /** 换账号/登出时清掉，避免把上一账号的模型目录带过来。 */
+      clear() {
+        try {
+          unlinkSync(file())
+        } catch {
+          // 没有文件也算清干净了
         }
       },
     }
@@ -478,25 +506,22 @@ export function apply(ctx, config) {
     return { key: '', source: '' }
   }
 
-  /** 余额（带 10 秒缓存；force 时绕过缓存立即查上游；没配 Key 时直接返回未配置）。 */
+  /** 余额（10 秒缓存；force 时绕过缓存立即查上游；没配 Key 时直接返回未配置）。 */
   const readDeepseekBalanceCached = async (force = false) => {
     const { key, source } = await readDeepseekApiKey()
     if (!key) return { available: false, total: null, currency: '', error: '未配置 DEEPSEEK_API_KEY', source: '' }
-    const at = Date.now()
-    if (
-      !force &&
-      deepseekBalanceCache.value &&
-      deepseekBalanceCache.key === source &&
-      at - deepseekBalanceCache.at < 10_000
-    ) {
-      return deepseekBalanceCache.value
-    }
     const env = (typeof process !== 'undefined' && process.env) || {}
     const baseUrl = typeof env.DEEPSEEK_BASE_URL === 'string' ? env.DEEPSEEK_BASE_URL : ''
+    // 缓存键必须带上 Key 指纹与端点：同一来源换了 Key（换账号）不能复用上一账号的余额。
+    const cacheKey = `${source}\u0000${baseUrl}\u0000${createHash('sha256').update(key).digest('hex').slice(0, 32)}`
+    const at = Date.now()
+    if (!force && deepseekBalanceCache.value && deepseekBalanceCache.key === cacheKey && at - deepseekBalanceCache.at < 10_000) {
+      return deepseekBalanceCache.value
+    }
     const value = { ...(await fetchDeepseekBalance({ apiKey: key, baseUrl })), source }
     // 失败不覆盖上一次成功的缓存，避免一次网络抖动就把金额清空。
-    if (value.total !== null || !deepseekBalanceCache.value || deepseekBalanceCache.key !== source) {
-      deepseekBalanceCache = { at, value, key: source }
+    if (value.total !== null || !deepseekBalanceCache.value || deepseekBalanceCache.key !== cacheKey) {
+      deepseekBalanceCache = { at, value, key: cacheKey }
     }
     return value
   }
@@ -524,28 +549,81 @@ export function apply(ctx, config) {
   let lastSyncedUsageKey = ''
   let usageSyncTriedAt = 0
 
-  const syncUsageCredential = async (credential) => {
-    try {
-      const accessToken = credential && credential.accessToken
-      if (!accessToken) return
-      const key = `${accessToken}\u0000${credential.accountId || ''}`
-      if (key === lastSyncedUsageKey) return
-      const credentials = ctx.get('credentials')
-      if (!credentials || typeof credentials.set !== 'function') return
-      usageSyncStatus = { ...usageSyncStatus, attempts: usageSyncStatus.attempts + 1 }
-      await credentials.set(USAGE_TOKEN_REF, accessToken)
-      if (credential.accountId) await credentials.set(USAGE_ACCOUNT_REF, credential.accountId)
-      lastSyncedUsageKey = key
-      usageSyncStatus = { ok: true, at: Date.now(), error: '', attempts: usageSyncStatus.attempts }
-    } catch (error) {
-      usageSyncStatus = {
-        ok: false,
-        at: Date.now(),
-        error: error instanceof Error ? error.message : String(error),
-        attempts: usageSyncStatus.attempts,
-      }
-    }
+  /** 凭证写入串行化：并发写会重复广播变更事件，登出也可能被在途同步覆盖。 */
+  let credentialQueue = Promise.resolve()
+  const enqueueCredentialMutation = (task) => {
+    const run = credentialQueue.then(task, task)
+    credentialQueue = run.then(
+      () => {},
+      () => {},
+    )
+    return run
   }
+
+  /** 只有值真的变了才写，避免无谓的 credentials 变更事件（会触发模型目录重拉）。 */
+  const setCredentialIfChanged = async (credentials, ref, value) => {
+    try {
+      if (typeof credentials.resolve === 'function') {
+        const current = await credentials.resolve(ref)
+        const existing = current && typeof current.value === 'string' ? current.value : ''
+        if (existing === value) return false
+      }
+    } catch {
+      // 读不到就当需要写
+    }
+    await credentials.set(ref, value)
+    return true
+  }
+
+  const unsetCredentialIfPresent = async (credentials, ref) => {
+    if (!credentials || typeof credentials.unset !== 'function') return false
+    try {
+      if (typeof credentials.resolve === 'function') {
+        const current = await credentials.resolve(ref)
+        const existing = current && typeof current.value === 'string' ? current.value : ''
+        if (!existing) return false
+      }
+    } catch {
+      // 读不到就按「可能需要清」处理
+    }
+    await credentials.unset(ref)
+    return true
+  }
+
+  /** 错误信息落盘/回显前脱敏：去掉形似凭证的长串。 */
+  const redactMessage = (error) => {
+    const raw = error instanceof Error ? error.message : String(error)
+    return raw.replace(/[A-Za-z0-9_\-.]{24,}/g, '[redacted]').slice(0, 160)
+  }
+
+  const syncUsageCredential = async (credential) =>
+    enqueueCredentialMutation(async () => {
+      try {
+        const accessToken = credential && credential.accessToken
+        if (!accessToken) return
+        const key = `${accessToken}\u0000${credential.accountId || ''}`
+        if (key === lastSyncedUsageKey) return
+        const credentials = ctx.get('credentials')
+        if (!credentials || typeof credentials.set !== 'function') return
+        usageSyncStatus = { ...usageSyncStatus, attempts: usageSyncStatus.attempts + 1 }
+        await setCredentialIfChanged(credentials, USAGE_TOKEN_REF, accessToken)
+        if (credential.accountId) {
+          await setCredentialIfChanged(credentials, USAGE_ACCOUNT_REF, credential.accountId)
+        } else {
+          // 新凭证没有 accountId 时必须清旧值，否则消费者会拿上一个账号的 id 去查。
+          await unsetCredentialIfPresent(credentials, USAGE_ACCOUNT_REF)
+        }
+        lastSyncedUsageKey = key
+        usageSyncStatus = { ok: true, at: Date.now(), error: '', attempts: usageSyncStatus.attempts }
+      } catch (error) {
+        usageSyncStatus = {
+          ok: false,
+          at: Date.now(),
+          error: redactMessage(error),
+          attempts: usageSyncStatus.attempts,
+        }
+      }
+    })
 
   /**
    * 节流版同步：只在读取快照/激活时偶尔试一次。
@@ -1011,8 +1089,22 @@ export function apply(ctx, config) {
     }
     if (op === 'logout') {
       await cancelLogin()
-      authStore.clear()
+      // 登出必须连同「镜像给用量插件的凭证」一起清掉，而且要和在途同步串行，
+      // 否则刚清完又被旧同步写回去（token 生命周期会比登录还长）。
+      await enqueueCredentialMutation(async () => {
+        authStore.clear()
+        lastSyncedUsageKey = ''
+        usageSyncTriedAt = 0
+        usageSyncStatus = { ok: null, at: 0, error: '', attempts: 0 }
+        const credentials = ctx.get('credentials')
+        if (credentials) {
+          await unsetCredentialIfPresent(credentials, USAGE_TOKEN_REF)
+          await unsetCredentialIfPresent(credentials, USAGE_ACCOUNT_REF)
+        }
+      })
       modelsCache = { at: 0, models: [], error: '' }
+      // 上一账号的模型目录不能留给下一个账号用。
+      modelsCacheStore.clear()
       // 用量缓存也必须失效，否则卡片还会显示上一个账号的计划与限额。
       try {
         __resetUsageCache()
@@ -1089,6 +1181,16 @@ export function apply(ctx, config) {
       if (req.method === 'GET') {
         // 局域网来源（非回环）只给脱敏数据：不回邮箱/姓名/订阅起止/用量/模型/重置卡。
         const redacted = allowLanAccess() && !isLoopback(req)
+        if (url.searchParams.get('meta') === '1') {
+          // 轻量快照：侧边栏「跟随当前模型」每 3 秒轮询用，不含邮箱/套餐/用量/写令牌，
+          // 也不触发任何凭证写入副作用。
+          sendJson(res, 200, {
+            ok: true,
+            currentModel: currentModelSelection(),
+            defaultUsageTab: redacted ? '' : defaultUsageTab(),
+          })
+          return
+        }
         if (url.searchParams.get('usage') === '1') {
           if (redacted) {
             sendJson(res, 200, { ok: true, usage: { available: false, reason: 'lan-redacted' } })
@@ -1196,6 +1298,11 @@ export function apply(ctx, config) {
           }
         }
         sendJson(res, 200, snap)
+        return
+      }
+      if (req.method !== 'GET' && req.method !== 'POST') {
+        // 只支持读与写两种；PUT/PATCH/DELETE 一律拒绝，避免绕过写令牌的路径。
+        sendJson(res, 405, { ok: false, error: 'method not allowed' })
         return
       }
       if (req.method === 'POST') {
