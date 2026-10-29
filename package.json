@@ -1,7 +1,7 @@
 {
   "name": "dsh-codex-gpt",
   "displayName": "双脑",
-  "version": "0.7.1",
+  "version": "0.7.2",
   "private": true,
   "description": "【双脑】DeepSeek Harness 的 Codex/GPT 桥接插件：OpenAI 官网 OAuth 登录，按会话授权调用 Codex，并在模型列表提供 ChatGPT 模型。",
   "type": "module",

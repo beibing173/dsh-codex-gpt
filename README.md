@@ -4,8 +4,8 @@
 
 | 名称 | 值 | 说明 |
 |---|---|---|
-| 插件显示名 | **双脑**（`package.json` 的 `displayName`） | 插件页/市场里看到的名字 |
 | 包名（下载名） | `dsh-codex-gpt`（`package.json` 的 `name`） | 安装、更新、依赖引用用的名字，**不要改**，改了 DSH 就认不出这是同一个插件 |
+| 中文名 | **双脑**（`package.json` 的 `displayName`） | 已写进包元数据；**当前 DSH 版本的插件页标题只读包名**，所以列表里仍显示 `dsh-codex-gpt`，「双脑」出现在描述与文档里 |
 
 把 **ChatGPT / OpenAI Codex** 接入 [DeepSeek Harness (DSH)](https://github.com/deepseek-ai) 的插件：既能在模型选择器里把 **ChatGPT 当作一个 LLM provider 直接对话**，也能让 DeepSeek 在会话内按需把难任务**转交给 GPT 做独立分析或代码构建**。
 
@@ -56,7 +56,7 @@
 - DeepSeek 页（本插件自带，不依赖别的插件）：
   - **实时余额**（人民币，10 秒缓存），标题旁标「按量计费」；
   - **高峰期 / 空闲期**指示：北京时间 **00:30–08:30 为空闲（折扣价）**，其余为标准价，并显示距离下一次切换的倒计时；
-  - 余额读不到时明确显示原因（如未配置 `DEEPSEEK_API_KEY`），不会编造数字；
+  - 余额读不到时显示 **`—`**（不是 `0.00`）并给出原因：未配置 `DEEPSEEK_API_KEY`、**网络请求失败（检查连接或代理）**、上游 HTTP 状态等，绝不编造数字；
   - 更新节奏：余额每 **10 秒**自动刷新；点当前那家的名字会**立即强制重查**；切模型 **3 秒**内自动跟随；
   - 余额端点跟随 `DEEPSEEK_BASE_URL`（与 DeepSeek 适配器同口径），没设就用官方 `api.deepseek.com/user/balance`。
 - 如果机器上还装了别的用量插件（如 `@dougen/dsh-deepseek-usage`），它已经配好的其它 AI（Kimi / GLM / OpenRouter / MiniMax …）会自动出现在切换列表里；不装也完全可以只用本插件。
@@ -152,7 +152,7 @@ DSH 中通过 **插件管理** 以本地 bundle 方式安装：
 | `network.js` | 外网连通性检查 |
 | `client.js` | 浏览器侧：输入框授权胶囊、侧边栏用量卡片、设置页 |
 | `cordis.patch.yml` | 插入主机行 `id: dsh-codex-gpt` |
-| `test/` | `node --test` 单测（118 条，含安全回归、卡片真实渲染、第三方积分解析与客户端冒烟） |
+| `test/` | `node --test` 单测（114 条，含安全回归、卡片真实渲染、第三方积分解析与客户端冒烟） |
 
 数据流（方式 A）：
 
