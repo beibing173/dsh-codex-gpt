@@ -15,6 +15,7 @@
 - 支持**思考强度**：`Off / Low / High / Max`，默认 `High`，内部映射到 Codex 的 `reasoning.effort`（`Max → xhigh`，`Off → 不发送 reasoning`）。
 - 支持**图片输入**：贴图直接发给 GPT（经 `ctx.attachments.readImage` 读取并编码为 `input_image`）。
 - 模型列表带 5 分钟缓存，并对 HTTP 429 限流自动回退，不会污染界面。
+- **GPT 模式轻任务委派（独立开关）**：开启后，ChatGPT 处理会话时会把格式化、整理、检索归纳、润色等轻任务交给 **DeepSeek V4.1** 完成并收尾，复杂任务仍由 GPT 直接处理；随时可关。
 
 ### 2. `codex` 工具（DeepSeek 自主升级）
 
@@ -82,7 +83,9 @@ DSH 中通过 **插件管理** 以本地 bundle 方式安装：
 | --- | --- | --- |
 | `defaultModel` | `gpt-5-codex` | 默认模型（候选从 OpenAI 实时拉取） |
 | `autoConsult` | `true` | 允许模型自主按任务强度调用 `codex` 工具 |
-| `allowLanAccess` | `false` | 允许局域网设备访问插件状态路由（默认仅本机） |
+| `allowLanAccess` | `false` | 允许局域网设备**只读**查看插件状态（写操作始终仅限本机） |
+| `delegateLightTasks` | `false` | GPT 模式下允许把轻任务交给 DeepSeek V4.1 收尾（独立开关，可随时关闭） |
+| `deepseekModel` | 空 | 轻任务委派使用的 DeepSeek 模型 id；留空自动选择当前可用模型 |
 
 持久化数据：
 
@@ -105,7 +108,7 @@ DSH 中通过 **插件管理** 以本地 bundle 方式安装：
 | `network.js` | 外网连通性检查 |
 | `client.js` | 浏览器侧：输入框 Codex 胶囊按钮、侧边栏用量卡片、设置页 |
 | `cordis.patch.yml` | 插入主机行 `id: dsh-codex-gpt` |
-| `test/` | `node --test` 单测（50 条） |
+| `test/` | `node --test` 单测（57 条，含安全回归） |
 
 数据流（方式 A）：
 
@@ -136,6 +139,8 @@ node --test "test/codex.test.mjs" "test/usage.test.mjs" "test/host.test.mjs" "te
 - `allowLanAccess: true` 时局域网设备**只能只读查询**；登录、登出、兑换重置卡等写操作必须在运行 DSH 的本机执行；
 - OAuth 回调页回显的 URL 参数（如 `error`）全部做 HTML 转义，防止反射型 XSS；
 - 凭证文件以 `0600` 权限写入（POSIX 系统），token **不会**通过状态路由回传给浏览器；
+- 插件只读 Codex CLI 的 `auth.json`，**不替其他应用刷新或轮换**其 token；
+- 局域网模式下的只读数据已脱敏（不返回邮箱、姓名、订阅起止、用量、模型与重置卡）；
 - 会话授权**不继承**给子代理（subagent）或 fork 出的新会话；
 - 未登录 / 未授权时不会发起任何 OpenAI 请求。
 

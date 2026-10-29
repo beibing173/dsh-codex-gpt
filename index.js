@@ -14,7 +14,7 @@
 import z from '@deepseek-ai/schemastery'
 import { readFileSync, writeFileSync, mkdirSync, renameSync } from 'node:fs'
 import { join, dirname } from 'node:path'
-import { homedir } from 'node:os'
+import { homedir, networkInterfaces } from 'node:os'
 import { callCodexBackend, fetchCodexModels, fetchResetCredits, consumeResetCredit } from './codex.js'
 import { getCodexUsage, __resetUsageCache } from './usage.js'
 import { checkConnectivity } from './network.js'
@@ -70,7 +70,17 @@ export const Config = z.object({
   allowLanAccess: z
     .boolean()
     .default(false)
-    .description('允许局域网设备通过 Web UI 读写本插件状态；默认仅本机回环地址。')
+    .description('允许局域网设备通过 Web UI 只读查看本插件状态；写操作始终仅限本机。')
+    .volatile(),
+  delegateLightTasks: z
+    .boolean()
+    .default(false)
+    .description('GPT（ChatGPT）模式下，允许把轻量任务交给 DeepSeek V4.1 协作完成并收尾；独立开关，可随时关闭。')
+    .volatile(),
+  deepseekModel: z
+    .string()
+    .default('')
+    .description('轻任务委派使用的 DeepSeek 模型 id；留空则自动选择当前可用模型。')
     .volatile(),
 })
 
@@ -113,6 +123,22 @@ function planLabel(plan) {
 function isLoopback(req) {
   const address = (req && req.socket && req.socket.remoteAddress) || ''
   return address === '127.0.0.1' || address === '::1' || address === '::ffff:127.0.0.1'
+}
+
+/** 本机允许的 Host 名（回环 + 本机网卡地址）。LAN 模式也用它挡 DNS rebinding。 */
+function isAllowedHost(hostname) {
+  if (!hostname) return true
+  const allowed = new Set(['127.0.0.1', 'localhost', '::1', '0.0.0.0'])
+  try {
+    for (const list of Object.values(networkInterfaces())) {
+      for (const info of list || []) {
+        if (info && typeof info.address === 'string') allowed.add(info.address.toLowerCase())
+      }
+    }
+  } catch {
+    // 读取网卡失败时只保留回环名
+  }
+  return allowed.has(hostname)
 }
 
 function sendJson(res, status, payload) {
@@ -289,6 +315,11 @@ export function apply(ctx, config) {
   }
   const autoConsult = () => readValue('autoConsult') !== false
   const allowLanAccess = () => readValue('allowLanAccess') === true
+  const delegateLightTasks = () => readValue('delegateLightTasks') === true
+  const delegateModel = () => {
+    const raw = readValue('deepseekModel')
+    return typeof raw === 'string' ? raw.trim() : ''
+  }
 
   const authStore = createAuthStore({
     env: (typeof process !== 'undefined' && process.env) || {},
@@ -447,6 +478,92 @@ export function apply(ctx, config) {
     },
   })
 
+  // ── 1b. DeepSeek 轻任务委派（GPT 模式下把轻任务交 DeepSeek V4.1 收尾） ──────
+  const deepseekProvider = () => {
+    try {
+      const ids = ctx.llm.listProviders().map((provider) => provider.id)
+      if (ids.includes('deepseek-account')) return 'deepseek-account'
+      if (ids.includes('deepseek-official')) return 'deepseek-official'
+      return ids[0] || 'deepseek-official'
+    } catch {
+      return 'deepseek-official'
+    }
+  }
+  let deepseekModelCache = { at: 0, id: '' }
+  const resolveDeepseekModel = async (provider) => {
+    const configured = delegateModel()
+    if (configured) return configured
+    if (deepseekModelCache.id && Date.now() - deepseekModelCache.at < 10 * 60_000) return deepseekModelCache.id
+    try {
+      const models = await ctx.llm.listModels(provider)
+      const pick = models.find((item) => /v4|flash|chat/i.test(item.id)) || models[0]
+      if (pick && pick.id) {
+        deepseekModelCache = { at: Date.now(), id: pick.id }
+        return pick.id
+      }
+    } catch {
+      // 模型目录不可用时用保守默认
+    }
+    return 'deepseek-chat'
+  }
+  const runDeepSeek = async (prompt, signal) => {
+    const provider = deepseekProvider()
+    const model = await resolveDeepseekModel(provider)
+    let text = ''
+    for await (const chunk of ctx.llm.stream({
+      provider,
+      model,
+      messages: [{ role: 'user', content: [{ type: 'text', text: prompt }] }],
+      signal,
+    })) {
+      if (chunk.type === 'text-delta') text += chunk.text
+      else if (chunk.type === 'finish' && chunk.reason.kind === 'error') {
+        throw new Error(chunk.reason.failure?.message || 'DeepSeek 调用失败')
+      }
+    }
+    return text.trim()
+  }
+
+  ctx.tools.register({
+    name: 'deepseek_delegate',
+    description:
+      '把轻量任务交给 DeepSeek V4.1 协作完成并收尾（仅当设置里开启「GPT 模式下轻任务交 DeepSeek 收尾」时可用）。适合简单格式化、纯文本整理、常规检索归纳、收尾润色、机械性改写；复杂架构、疑难 bug、深度推理不要用它。',
+    parameters: {
+      type: 'object',
+      properties: {
+        task: { type: 'string', description: '交给 DeepSeek 的任务，写清输入与期望输出。' },
+        context: { type: 'string', description: '可选：完成任务所需的上下文（原文、约束、格式要求）。' },
+      },
+      required: ['task'],
+      additionalProperties: false,
+    },
+    output: textOutput,
+    timeoutMs: 180_000,
+    async execute(args, exec) {
+      if (!delegateLightTasks()) {
+        return '该功能未开启：请在 设置 → Codex 打开「GPT 模式下轻任务交 DeepSeek 收尾」后再使用。'
+      }
+      const task = typeof args?.task === 'string' ? args.task.trim().slice(0, MAX_CONTEXT_CHARS) : ''
+      if (!task) return 'deepseek_delegate 缺少 task。'
+      const context = typeof args?.context === 'string' ? args.context.trim().slice(0, MAX_CONTEXT_CHARS) : ''
+      const prompt = context ? `${task}\n\n附加上下文：\n${context}` : task
+      const timeout = AbortSignal.timeout(180_000)
+      const signal =
+        exec && exec.signal && typeof AbortSignal.any === 'function'
+          ? AbortSignal.any([exec.signal, timeout])
+          : timeout
+      try {
+        const text = await runDeepSeek(prompt, signal)
+        return text || '（DeepSeek 没有返回内容）'
+      } catch (error) {
+        if (error && (error.name === 'AbortError' || error.name === 'TimeoutError')) {
+          return 'DeepSeek 调用超时或被取消。'
+        }
+        return `DeepSeek 调用失败：${error instanceof Error ? error.message : String(error)}`
+      }
+    },
+  })
+
   // ── 2. 每会话提示策略：随组装上下文求值，开关切换后下一轮即生效 ─────────────
   const scopeSessionId = (context) => {
     if (!context || typeof context !== 'object') return ''
@@ -486,6 +603,22 @@ export function apply(ctx, config) {
     },
   })
 
+  // ── 2b. 轻任务委派策略：仅当开关开启时提示 GPT 把轻任务交给 DeepSeek ──────
+  ctx.systemPrompt.section({
+    name: 'dsh-codex-delegate',
+    order: POLICY_ORDER + 10,
+    text: () => {
+      if (!delegateLightTasks()) return ''
+      return [
+        '## 轻任务协作（GPT 模式）',
+        '本机已开启「GPT 模式下轻任务交 DeepSeek 收尾」：',
+        '- 遇到轻量/机械性任务（简单格式化、纯文本整理、常规检索归纳、收尾润色、机械性改写），优先调用 `deepseek_delegate` 交给 DeepSeek V4.1 完成，再把结果整合进你的最终回答。',
+        '- 复杂架构、疑难 bug、需要深度推理或工具链操作的任务仍由你直接完成。',
+        '- 调用时把任务写清楚；它看不到本会话上下文，需要自包含。',
+      ].join('\n')
+    },
+  })
+
   // ── 3. 设置页：关闭自动生成表单（本插件自带 Codex 设置页） ─────────────────
   try {
     ctx.inject(['settings'], (child) => {
@@ -516,21 +649,20 @@ export function apply(ctx, config) {
     if (origin && expected && origin !== expected) return '跨站请求被拒绝。'
     const site = req.headers['sec-fetch-site']
     if (site && site !== 'same-origin' && site !== 'none') return '跨站请求被拒绝。'
-    if (!allowLanAccess()) {
-      // 即使 getOrigin() 暂时不可用也必须校验 Host，否则 DNS rebinding 可绕过同源限制。
-      const host = String(req.headers.host || '').toLowerCase()
-      const hostname = host.replace(/:\d+$/, '')
-      const loopbackHosts = ['127.0.0.1', 'localhost', '[::1]', '::1']
-      if (host && !loopbackHosts.includes(hostname)) return 'Host 不匹配。'
-      if (expected && host) {
-        try {
-          if (host !== new URL(expected).host.toLowerCase()) return 'Host 不匹配。'
-        } catch {
-          // expected 不是合法 URL 时已由上面的回环 Host 校验兜底
-        }
+    // Host 白名单不随 LAN 模式关闭：回环名或本机网卡地址，否则视为 DNS rebinding。
+    const host = String(req.headers.host || '').toLowerCase()
+    const hostname = host.replace(/:\d+$/, '').replace(/^\[|\]$/g, '')
+    if (host && !isAllowedHost(hostname)) return 'Host 不匹配。'
+    if (expected && host) {
+      try {
+        const expectedHost = new URL(expected).host.toLowerCase()
+        // LAN 访问时 Host 可能是本机网卡地址（已被 isAllowedHost 放行）。
+        if (host !== expectedHost && !(allowLanAccess() && !isLoopback(req))) return 'Host 不匹配。'
+      } catch {
+        // expected 不是合法 URL 时已由上面的白名单兜底
       }
     }
-    if (allowLanAccess() && req.method !== 'GET') {
+    if (!isLoopback(req) && req.method !== 'GET') {
       return '局域网模式仅允许只读查询；登录/登出/兑换重置卡等操作请在运行 DSH 的本机执行。'
     }
     if (req.method === 'POST' && !/^application\/json\b/i.test(String(req.headers['content-type'] || ''))) {
@@ -555,6 +687,8 @@ export function apply(ctx, config) {
         defaultModel: defaultModel(),
         autoConsult: autoConsult(),
         allowLanAccess: allowLanAccess(),
+        delegateLightTasks: delegateLightTasks(),
+        deepseekModel: delegateModel(),
       },
       session: sessionId ? { ...store.get(sessionId), model: effectiveModel(sessionId) } : null,
     }
@@ -583,6 +717,8 @@ export function apply(ctx, config) {
       }
       if (typeof patch.autoConsult === 'boolean') next.autoConsult = patch.autoConsult
       if (typeof patch.allowLanAccess === 'boolean') next.allowLanAccess = patch.allowLanAccess
+      if (typeof patch.delegateLightTasks === 'boolean') next.delegateLightTasks = patch.delegateLightTasks
+      if (typeof patch.deepseekModel === 'string') next.deepseekModel = patch.deepseekModel.trim().slice(0, 200)
       if (Object.keys(next).length > 0) await writeConfig(next)
       return
     }
@@ -662,8 +798,14 @@ export function apply(ctx, config) {
         return
       }
       if (req.method === 'GET') {
+        // 局域网来源（非回环）只给脱敏数据：不回邮箱/姓名/订阅起止/用量/模型/重置卡。
+        const redacted = allowLanAccess() && !isLoopback(req)
         if (url.searchParams.get('usage') === '1') {
-          const credential = describeCredential(authStore.read())
+          if (redacted) {
+            sendJson(res, 200, { ok: true, usage: { available: false, reason: 'lan-redacted' } })
+            return
+          }
+          const credential = await ensureAccessToken(authStore)
           const usage = await getCodexUsage({
             env: (typeof process !== 'undefined' && process.env) || {},
             credential,
@@ -672,10 +814,19 @@ export function apply(ctx, config) {
           return
         }
         if (url.searchParams.get('auth') === '1') {
+          if (redacted) {
+            const auth = authSnapshot()
+            sendJson(res, 200, { ok: true, auth: { loggedIn: auth.loggedIn, plan: auth.plan, planLabel: auth.planLabel } })
+            return
+          }
           sendJson(res, 200, { ok: true, auth: authSnapshot() })
           return
         }
         if (url.searchParams.get('models') === '1') {
+          if (redacted) {
+            sendJson(res, 200, { ok: true, models: [], error: 'lan-redacted' })
+            return
+          }
           const credential = await ensureAccessToken(authStore)
           if (!credential) {
             sendJson(res, 200, { ok: true, models: [], error: '尚未登录 OpenAI 账号' })
@@ -686,6 +837,10 @@ export function apply(ctx, config) {
           return
         }
         if (url.searchParams.get('resets') === '1') {
+          if (redacted) {
+            sendJson(res, 200, { ok: true, result: { availableCount: 0, credits: [] }, error: 'lan-redacted' })
+            return
+          }
           const credential = await ensureAccessToken(authStore)
           if (!credential) {
             sendJson(res, 200, { ok: true, result: { availableCount: 0, credits: [] }, error: '尚未登录 OpenAI 账号' })
@@ -699,7 +854,12 @@ export function apply(ctx, config) {
           return
         }
         const sessionId = normalizeSessionId(url.searchParams.get('sessionId') || '')
-        sendJson(res, 200, snapshot(sessionId))
+        const snap = snapshot(sessionId)
+        if (redacted) {
+          snap.auth = { loggedIn: snap.auth.loggedIn, plan: snap.auth.plan, planLabel: snap.auth.planLabel }
+          snap.session = null
+        }
+        sendJson(res, 200, snap)
         return
       }
       if (req.method === 'POST') {

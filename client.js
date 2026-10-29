@@ -397,6 +397,8 @@ window.__ModuleLoader__.load({
       const [defaultModel, setDefaultModel] = useState('')
       const [autoConsult, setAutoConsult] = useState(true)
       const [allowLan, setAllowLan] = useState(false)
+      const [delegateLight, setDelegateLight] = useState(false)
+      const [deepseekModel, setDeepseekModel] = useState('')
       const [models, setModels] = useState([])
       const [modelsError, setModelsError] = useState('')
       const [error, setError] = useState('')
@@ -443,6 +445,8 @@ window.__ModuleLoader__.load({
             setDefaultModel(data.global.defaultModel || '')
             setAutoConsult(data.global.autoConsult !== false)
             setAllowLan(data.global.allowLanAccess === true)
+            setDelegateLight(data.global.delegateLightTasks === true)
+            setDeepseekModel(data.global.deepseekModel || '')
           }
           if (data.auth && data.auth.loggedIn) {
             await loadModels(false)
@@ -571,7 +575,7 @@ window.__ModuleLoader__.load({
         try {
           await postOp({
             op: 'setGlobal',
-            patch: { defaultModel, autoConsult, allowLanAccess: allowLan },
+            patch: { defaultModel, autoConsult, allowLanAccess: allowLan, delegateLightTasks: delegateLight, deepseekModel },
           })
           setNotice('已保存并生效。')
         } catch (saveFailure) {
@@ -579,7 +583,7 @@ window.__ModuleLoader__.load({
         } finally {
           setBusy(false)
         }
-      }, [defaultModel, autoConsult, allowLan])
+      }, [defaultModel, autoConsult, allowLan, delegateLight, deepseekModel])
 
       const checkNetwork = useCallback(async () => {
         setChecking(true)
@@ -803,9 +807,47 @@ window.__ModuleLoader__.load({
             h(
               'span',
               { onClick: () => setAllowLan(!allowLan), style: { fontSize: '13px', cursor: 'pointer' } },
-              '允许局域网设备读写本插件状态（默认仅本机）',
+              '允许局域网设备只读查看本插件状态（写操作始终仅限本机）',
             ),
           ),
+          h(
+            'div',
+            { style: styles.row },
+            h(ToggleBox, { on: delegateLight }),
+            h(
+              'span',
+              { onClick: () => setDelegateLight(!delegateLight), style: { fontSize: '13px', cursor: 'pointer' } },
+              'GPT 模式下轻任务交 DeepSeek V4.1 收尾（独立开关）',
+            ),
+          ),
+          delegateLight
+            ? h(
+                'div',
+                { style: styles.hint },
+                '开启后，ChatGPT 处理会话时可以把格式化、整理、检索归纳、润色等轻任务交给 DeepSeek V4.1 完成，再整合进回答；复杂任务仍由 GPT 直接处理。',
+              )
+            : null,
+          delegateLight
+            ? h(
+                'div',
+                { style: styles.row },
+                h('span', { style: styles.label }, 'DeepSeek 模型'),
+                h('input', {
+                  value: deepseekModel,
+                  placeholder: '留空自动选择（可填 deepseek-v4.1-flash 等）',
+                  onChange: (event) => setDeepseekModel(event.target.value),
+                  style: {
+                    flex: 1,
+                    padding: '6px 10px',
+                    borderRadius: '8px',
+                    border: '1px solid rgba(124,199,255,.35)',
+                    background: 'transparent',
+                    color: 'inherit',
+                    fontSize: '13px',
+                  },
+                }),
+              )
+            : null,
           h(
             'div',
             { style: styles.row },

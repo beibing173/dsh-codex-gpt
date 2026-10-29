@@ -227,12 +227,13 @@ async function requestUsage(accessToken, accountId, signal) {
 }
 
 /**
- * 用 refresh_token 换新 token，并写回 auth.json。
- * 写回是必须的：OpenAI 在刷新时会轮换 refresh_token，不写回会让 Codex CLI
- * 下次使用旧 token 失败。写回失败只影响下次启动，本次仍使用新 token。
+ * 用 refresh_token 换新 token。
+ * 默认**不写回** Codex CLI 的 auth.json：插件只读 CLI 凭证，避免与 CLI 的
+ * refresh_token 轮换互相作废或覆盖未知字段。写回仅作为显式 opt-in 保留给
+ * 未来的共享凭证模式（writeBack: true）。
  * @returns {Promise<string | undefined>} 新 access_token，失败返回 undefined。
  */
-async function refreshAuth(auth, signal) {
+async function refreshAuth(auth, signal, { writeBack = false } = {}) {
   const refreshToken = auth.tokens && auth.tokens.refresh_token
   if (typeof refreshToken !== 'string' || !refreshToken) return undefined
   try {
@@ -269,7 +270,7 @@ async function refreshAuth(auth, signal) {
       last_refresh: new Date().toISOString(),
     }
     delete next.path
-    if (typeof auth.path === 'string' && auth.path) {
+    if (writeBack && typeof auth.path === 'string' && auth.path) {
       try {
         const tmp = `${auth.path}.dsh-codex.tmp`
         writeFileSync(tmp, JSON.stringify(next, null, 2), { encoding: 'utf8', mode: 0o600 })

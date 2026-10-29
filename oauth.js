@@ -12,7 +12,7 @@
  */
 import { randomBytes, createHash } from 'node:crypto'
 import { createServer } from 'node:http'
-import { readFileSync, writeFileSync, mkdirSync, renameSync } from 'node:fs'
+import { readFileSync, writeFileSync, mkdirSync, renameSync, rmSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { homedir } from 'node:os'
 
@@ -125,11 +125,13 @@ export function createAuthStore({ env = {}, homeDir = () => homedir() } = {}) {
 
   const clear = () => {
     cache = undefined
+    // 登出必须真正删掉磁盘凭证：只覆盖写会被读回，导致 UI 显示已登出但工具仍可用。
     try {
-      writeFileSync(filePath(), JSON.stringify({ version: 1 }, null, 2), 'utf8')
-    } catch {
-      // 清除失败只影响下次启动
+      rmSync(filePath(), { force: true })
+    } catch (error) {
+      throw new Error(`登出失败：无法删除凭证文件（${error instanceof Error ? error.message : String(error)}）`)
     }
+    if (read()) throw new Error('登出失败：凭证文件仍可读取')
   }
 
   return { path: filePath, read, save, clear }
@@ -233,6 +235,9 @@ export async function refreshTokens(refreshToken) {
   return json
 }
 
+/** 刷新单飞：并发调用共用一次 refresh，避免 refresh_token 互相作废。 */
+let inflightRefresh = null
+
 /** 确保拿到可用 access_token（过期前 60 秒自动刷新并写回）。 */
 export async function ensureAccessToken(store) {
   const record = store.read()
@@ -241,7 +246,12 @@ export async function ensureAccessToken(store) {
   if (credential.expiresAt - Date.now() > 60_000) return credential
   if (!credential.refreshToken) return credential
   try {
-    const tokens = await refreshTokens(credential.refreshToken)
+    if (!inflightRefresh) {
+      inflightRefresh = refreshTokens(credential.refreshToken).finally(() => {
+        inflightRefresh = null
+      })
+    }
+    const tokens = await inflightRefresh
     const next = buildAuthRecord(tokens, record)
     store.save(next)
     return describeCredential(next)

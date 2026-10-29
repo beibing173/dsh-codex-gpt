@@ -220,7 +220,7 @@ test('getCodexUsage: 无凭证时 available=false', async () => {
   assert.equal(usage.reason, 'no-auth')
 })
 
-test('getCodexUsage: 401 时刷新 token 并写回 auth.json', async (t) => {
+test('getCodexUsage: 401 时刷新 token，但默认不写回 CLI auth.json', async (t) => {
   const original = globalThis.fetch
   t.after(() => {
     globalThis.fetch = original
@@ -266,10 +266,10 @@ test('getCodexUsage: 401 时刷新 token 并写回 auth.json', async (t) => {
   assert.equal(calls[1].url, 'https://auth.openai.com/oauth/token')
   assert.equal(calls[2].authorization, 'Bearer new-access')
 
+  // 安全策略：插件只读 CLI 凭证，不替其他应用轮换 token（写回需显式 opt-in）。
   const written = JSON.parse(readFileSync(join(fakeHome, '.codex', 'auth.json'), 'utf8'))
-  assert.equal(written.tokens.access_token, 'new-access')
-  assert.equal(written.tokens.refresh_token, 'new-refresh')
-  assert.equal(typeof written.last_refresh, 'string')
+  assert.equal(written.tokens.access_token, oldAccess)
+  assert.equal(written.tokens.refresh_token, 'old-refresh')
 })
 
 test('getCodexUsage: 网络异常时 available=false 且带原因', async (t) => {

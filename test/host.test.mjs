@@ -275,15 +275,20 @@ function mockBackend({ models, sse, modelStatus = 200 } = {}) {
 
 test('apply 注册工具（完整 JSON Schema）、提示段与状态路由', () => {
   const harness = createHarness()
-  assert.equal(harness.tools.length, 1)
-  const tool = harness.tools[0]
-  assert.equal(tool.name, 'codex')
+  assert.equal(harness.tools.length, 2)
+  const tool = harness.tools.find((item) => item.name === 'codex')
   assert.equal(tool.parameters.type, 'object')
   assert.deepEqual(tool.parameters.required, ['task'])
   assert.equal(tool.parameters.properties.task.type, 'string')
   assert.deepEqual(tool.parameters.properties.mode.enum, ['analyze', 'build'])
-  assert.equal(harness.sections.length, 1)
+  const delegate = harness.tools.find((item) => item.name === 'deepseek_delegate')
+  assert.ok(delegate, '缺少 deepseek_delegate 工具')
+  assert.equal(delegate.parameters.type, 'object')
+  assert.deepEqual(delegate.parameters.required, ['task'])
+  assert.equal(delegate.parameters.additionalProperties, false)
+  assert.equal(harness.sections.length, 2)
   assert.equal(harness.sections[0].name, 'dsh-codex-policy')
+  assert.equal(harness.sections[1].name, 'dsh-codex-delegate')
   assert.equal(harness.routes.length, 1)
   assert.equal(harness.routes[0].path, '/dsh-codex-api')
   assert.equal(harness.routes[0].kind, 'prefix')
@@ -451,6 +456,33 @@ test('Host 校验：getOrigin 不可用时仍拒绝非回环 Host（防 DNS rebi
   const harness = createHarness()
   const rebound = await callApi(harness, { headers: { host: 'evil.example' } })
   assert.equal(rebound.status, 403)
+})
+
+test('局域网开关生效后本机 POST 仍可用（回归：防止控制面锁死）', async () => {
+  writeAuth()
+  const harness = createHarness()
+  const on = await callApi(harness, { method: 'POST', body: { op: 'setGlobal', patch: { allowLanAccess: true } } })
+  assert.equal(on.status, 200)
+  const off = await callApi(harness, { method: 'POST', body: { op: 'setGlobal', patch: { allowLanAccess: false } } })
+  assert.equal(off.status, 200)
+  assert.equal(off.json.global.allowLanAccess, false)
+})
+
+test('轻任务委派开关：默认关，可开关并回显模型', async () => {
+  writeAuth()
+  const harness = createHarness()
+  const before = await callApi(harness, {})
+  assert.equal(before.json.global.delegateLightTasks, false)
+  const on = await callApi(harness, {
+    method: 'POST',
+    body: { op: 'setGlobal', patch: { delegateLightTasks: true, deepseekModel: 'deepseek-v4.1-flash' } },
+  })
+  assert.equal(on.status, 200)
+  assert.equal(on.json.global.delegateLightTasks, true)
+  assert.equal(on.json.global.deepseekModel, 'deepseek-v4.1-flash')
+  const off = await callApi(harness, { method: 'POST', body: { op: 'setGlobal', patch: { delegateLightTasks: false } } })
+  assert.equal(off.status, 200)
+  assert.equal(off.json.global.delegateLightTasks, false)
 })
 
 test('外网连通性检查：3 条链路并行探测', async (t) => {
