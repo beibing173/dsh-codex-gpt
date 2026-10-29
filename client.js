@@ -315,6 +315,12 @@ window.__ModuleLoader__.load({
       const isOtherGptNamed = nameDetect && LOOKS_LIKE_GPT_RE.test(currentModelId || '')
       const label = isOwnChatGpt || isOtherGptNamed ? 'DeepSeek' : 'ChatGPT'
 
+      // 把「当前会话用的是哪个 provider/model」写给侧边栏用量卡。
+      useEffect(() => {
+        if (!sessionId || !provider) return
+        sessionModelStore.set({ sessionId, provider, model: currentModelId })
+      }, [sessionId, provider, currentModelId])
+
       const toggle = useCallback(async () => {
         if (!sessionId || busy || unavailable) return
         setBusy(true)
@@ -415,6 +421,47 @@ window.__ModuleLoader__.load({
       }
       return en ? `${minutes} min` : `${minutes} 分钟`
     }
+
+    /**
+     * 当前会话的模型选择。
+     * 输入框左侧胶囊每次渲染都能拿到当前会话的 provider/model，写进这个 store；
+     * 侧边栏用量卡订阅它，于是「当前对话换成什么模型，卡片就跟着换」。
+     */
+    const sessionModelStore = (() => {
+      let snapshot = { sessionId: '', provider: '', model: '' }
+      const listeners = new Set()
+      return {
+        get() {
+          return snapshot
+        },
+        subscribe(listener) {
+          listeners.add(listener)
+          return () => listeners.delete(listener)
+        },
+        set(next) {
+          const value = {
+            sessionId: String((next && next.sessionId) || ''),
+            provider: String((next && next.provider) || ''),
+            model: String((next && next.model) || ''),
+          }
+          if (
+            value.sessionId === snapshot.sessionId &&
+            value.provider === snapshot.provider &&
+            value.model === snapshot.model
+          ) {
+            return
+          }
+          snapshot = value
+          for (const listener of listeners) {
+            try {
+              listener()
+            } catch {
+              // 单个订阅者出错不影响其它订阅者
+            }
+          }
+        },
+      }
+    })()
 
     const usageStyles = {
       card: {
@@ -857,12 +904,16 @@ window.__ModuleLoader__.load({
       }, [rows])
 
       /** auto 模式：按「当前在用的模型」决定先显示哪一家。 */
+      /** 当前会话的模型（由输入框胶囊写入，比全局默认模型更贴近「我现在在用什么」）。 */
+      const sessionModel = useSyncExternalStore(sessionModelStore.subscribe, sessionModelStore.get)
+
+      /** auto 模式：优先按当前会话的模型决定先显示哪一家，其次才用全局默认模型。 */
       const autoTabId = useMemo(() => {
-        const provider = (currentModel && currentModel.provider) || ''
+        const provider = (sessionModel && sessionModel.provider) || (currentModel && currentModel.provider) || ''
         if (provider === 'openai-codex' || provider === 'chatgpt-codex') return 'chatgpt'
         if (provider.startsWith('deepseek')) return 'deepseek'
         return tabs.some((item) => item.id === provider) ? provider : 'chatgpt'
-      }, [currentModel, tabs])
+      }, [currentModel, sessionModel, tabs])
 
       const preferredId = preferred === 'auto' ? autoTabId : preferred
       // 手动覆盖只在「同一个模型」下有效：换模型就自动回到跟随，不会长期压住 auto。
