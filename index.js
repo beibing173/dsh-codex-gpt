@@ -19,14 +19,15 @@ import { callCodexBackend, fetchCodexModels, fetchResetCredits, consumeResetCred
 import { getCodexUsage, __resetUsageCache } from './usage.js'
 import { checkConnectivity } from './network.js'
 import { createAuthStore, ensureAccessToken, beginLogin, cancelLogin, describeCredential } from './oauth.js'
+import { createCodexGptAdapter } from './llm-adapter.js'
 
 export const name = 'dsh-codex-gpt'
 
 /** profile 条目 id：cordis.patch.yml 里 `- id: dsh-codex-gpt` 必须与此一致。 */
 export const ENTRY_ID = 'dsh-codex-gpt'
 
-/** Host 依赖：工具注册、提示组装、状态路由（与 dsh-meme 一致）。 */
-export const inject = ['tools', 'systemPrompt', 'webServer']
+/** Host 依赖：工具注册、提示组装、状态路由（与 dsh-meme 一致），外加 LLM 适配器注册。 */
+export const inject = ['tools', 'systemPrompt', 'webServer', 'llm']
 
 export const ROUTE = '/dsh-codex-api'
 /** 单次 Codex 调用超时（毫秒）。 */
@@ -698,11 +699,40 @@ export function apply(ctx, config) {
   try {
     ctx.effect(
       () => ctx.webServer.register({ kind: 'prefix', path: ROUTE, handler }),
-      'dsh-codex: /dsh-codex-api 状态路由',
+      'dsh-codex-gpt: /dsh-codex-api 状态路由',
     )
   } catch (error) {
     warn('状态路由注册失败', error)
   }
 
-  console.log(`[dsh-codex] activated (entry=${ENTRY_ID}, oauth, route=${ROUTE})`)
+  // ── 5. LLM 适配器：把 ChatGPT (Codex) 接进模型选择器 ───────────────────────
+  // 选中该 provider 的模型后，对话直接由 GPT 处理（读上下文、流式回复、工具调用）。
+  try {
+    ctx.effect(() => {
+      const handle = ctx.llm.registerAdapter(
+        ['chatgpt-codex'],
+        createCodexGptAdapter({
+          getCredential: async () => {
+            const credential = await ensureAccessToken(authStore)
+            return credential
+              ? { accessToken: credential.accessToken, accountId: credential.accountId }
+              : undefined
+          },
+          fetchModels: (credential) =>
+            fetchCodexModels({ accessToken: credential.accessToken, accountId: credential.accountId }),
+        }),
+      )
+      return () => {
+        try {
+          handle()
+        } catch {
+          // 已释放
+        }
+      }
+    }, 'dsh-codex-gpt: ChatGPT LLM 适配器')
+  } catch (error) {
+    warn('LLM 适配器注册失败（模型列表里不会出现 ChatGPT）', error)
+  }
+
+  console.log(`[dsh-codex-gpt] activated (entry=${ENTRY_ID}, oauth, llm=chatgpt-codex, route=${ROUTE})`)
 }

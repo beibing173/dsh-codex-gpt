@@ -16,6 +16,8 @@
     "codex.js",
     "usage.js",
     "network.js",
+    "oauth.js",
+    "llm-adapter.js",
     "client.js",
     "cordis.patch.yml",
     "locale/*.json",

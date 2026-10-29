@@ -64,7 +64,7 @@ function clearAuth() {
 before(async () => {
   rmSync(sandbox, { recursive: true, force: true })
   mkdirSync(join(sandbox, 'node_modules', '@deepseek-ai', 'schemastery'), { recursive: true })
-  for (const file of ['index.js', 'codex.js', 'usage.js', 'network.js', 'oauth.js']) {
+  for (const file of ['index.js', 'codex.js', 'usage.js', 'network.js', 'oauth.js', 'llm-adapter.js']) {
     copyFileSync(join(packageDir, file), join(sandbox, file))
   }
   writeFileSync(join(sandbox, 'package.json'), JSON.stringify({ type: 'module' }))
@@ -142,6 +142,13 @@ function createHarness(initialConfig = {}) {
       section(section) {
         sections.push(section)
         return () => {}
+      },
+    },
+    llm: {
+      registerAdapter() {
+        const handle = () => {}
+        handle.replace = () => {}
+        return handle
       },
     },
     on() {
