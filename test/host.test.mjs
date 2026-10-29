@@ -801,3 +801,33 @@ test('用量卡默认展示项：默认 ChatGPT，可通过 setGlobal 改成其�
   const reset = await callApi(harness, {})
   assert.equal(reset.json.global.defaultUsageTab, 'auto')
 })
+
+test('GET ?dashboard=1 返回峰谷时段与余额结构（未配 Key 时给原因，不编数字）', async () => {
+  const harness = await createHarness()
+  const res = await callApi(harness, { url: '/dsh-codex-api?dashboard=1' })
+  assert.equal(res.status, 200)
+  assert.equal(res.json.ok, true)
+  assert.equal(typeof res.json.peak.isPeak, 'boolean')
+  assert.equal(typeof res.json.peak.nextChangeAt, 'number')
+  assert.ok(res.json.deepseek, '缺少 deepseek 段')
+  assert.equal(res.json.deepseek.total, null)
+  assert.match(String(res.json.deepseek.error), /DEEPSEEK_API_KEY/)
+  assert.ok(res.json.currentModel === null || typeof res.json.currentModel === 'object')
+
+  // force=1 也必须正常返回（会尝试打上游，未配 Key 时同样给原因）。
+  const forced = await callApi(harness, { url: '/dsh-codex-api?dashboard=1&force=1' })
+  assert.equal(forced.status, 200)
+  assert.equal(forced.json.ok, true)
+})
+
+test('快照里的 currentModel 跟随 DSH 的 agentDefaultModel（auto 模式据此切换）', async () => {
+  const selection = { provider: 'deepseek-account', model: 'deepseek-flash' }
+  const harness = await createHarness({}, { agentDefaultModel: { currentSelection: () => selection } })
+  const res = await callApi(harness, {})
+  assert.deepEqual(res.json.global.currentModel, selection)
+
+  selection.provider = 'openai-codex'
+  selection.model = 'gpt-5.6-sol'
+  const next = await callApi(harness, {})
+  assert.equal(next.json.global.currentModel.provider, 'openai-codex')
+})

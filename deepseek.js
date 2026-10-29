@@ -14,8 +14,16 @@ const BEIJING_OFFSET_MINUTES = 8 * 60
 const OFF_PEAK_START_MINUTES = 30
 const OFF_PEAK_END_MINUTES = 8 * 60 + 30
 
-const BALANCE_URL = 'https://api.deepseek.com/user/balance'
+const BALANCE_PATH = '/user/balance'
+/** 官方端点；可用 DEEPSEEK_BASE_URL 覆盖（与 llm-deepseek 适配器一致）。 */
+export const PUBLIC_BASE_URL = 'https://api.deepseek.com'
 const REQUEST_TIMEOUT_MS = 8000
+
+/** 余额端点：与 DeepSeek 适配器共用同一个 base URL 环境变量。 */
+export function balanceUrl(baseUrl) {
+  const base = typeof baseUrl === 'string' && baseUrl.trim() !== '' ? baseUrl.trim() : PUBLIC_BASE_URL
+  return `${base.replace(/\/+$/, '')}${BALANCE_PATH}`
+}
 
 /** 当前时刻在北京时间里的「当天第几分钟」。 */
 function beijingMinuteOfDay(nowMs) {
@@ -88,7 +96,7 @@ async function timedFetch(url, init, timeoutMs = REQUEST_TIMEOUT_MS) {
 /**
  * 查一次 DeepSeek 余额。
  *
- * @param {{ apiKey: string, fetchImpl?: typeof fetch }} options
+ * @param {{ apiKey: string, baseUrl?: string, fetchImpl?: typeof fetch }} options
  * @returns {Promise<{ available: boolean, total: number|null, currency: string, granted: number|null, toppedUp: number|null, error?: string }>}
  */
 export async function fetchDeepseekBalance(options = {}) {
@@ -98,7 +106,7 @@ export async function fetchDeepseekBalance(options = {}) {
   }
   const doFetch = typeof options.fetchImpl === 'function' ? options.fetchImpl : timedFetch
   try {
-    const response = await doFetch(BALANCE_URL, {
+    const response = await doFetch(balanceUrl(options.baseUrl), {
       method: 'GET',
       headers: {
         Authorization: `Bearer ${apiKey}`,

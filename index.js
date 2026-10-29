@@ -478,16 +478,26 @@ export function apply(ctx, config) {
     return { key: '', source: '' }
   }
 
-  /** 余额（带 30 秒缓存；没配 Key 时直接返回未配置，不打网络）。 */
-  const readDeepseekBalanceCached = async () => {
+  /** 余额（带 10 秒缓存；force 时绕过缓存立即查上游；没配 Key 时直接返回未配置）。 */
+  const readDeepseekBalanceCached = async (force = false) => {
     const { key, source } = await readDeepseekApiKey()
     if (!key) return { available: false, total: null, currency: '', error: '未配置 DEEPSEEK_API_KEY', source: '' }
     const at = Date.now()
-    if (deepseekBalanceCache.value && deepseekBalanceCache.key === source && at - deepseekBalanceCache.at < 30_000) {
+    if (
+      !force &&
+      deepseekBalanceCache.value &&
+      deepseekBalanceCache.key === source &&
+      at - deepseekBalanceCache.at < 10_000
+    ) {
       return deepseekBalanceCache.value
     }
-    const value = { ...(await fetchDeepseekBalance({ apiKey: key })), source }
-    deepseekBalanceCache = { at, value, key: source }
+    const env = (typeof process !== 'undefined' && process.env) || {}
+    const baseUrl = typeof env.DEEPSEEK_BASE_URL === 'string' ? env.DEEPSEEK_BASE_URL : ''
+    const value = { ...(await fetchDeepseekBalance({ apiKey: key, baseUrl })), source }
+    // 失败不覆盖上一次成功的缓存，避免一次网络抖动就把金额清空。
+    if (value.total !== null || !deepseekBalanceCache.value || deepseekBalanceCache.key !== source) {
+      deepseekBalanceCache = { at, value, key: source }
+    }
     return value
   }
   /** 模型列表单飞：并发刷新共用一次上游请求。 */
@@ -1116,13 +1126,14 @@ export function apply(ctx, config) {
           return
         }
         if (url.searchParams.get('dashboard') === '1') {
-          // 用量看板：DeepSeek 余额 + 当前峰谷时段（不涉密：只回金额与时段）。
+          // 用量看板：DeepSeek 余额 + 当前峰谷时段 + 当前在用的模型（不涉密）。
           const peak = peakState(Date.now())
+          const force = url.searchParams.get('force') === '1'
           let deepseek = null
           if (!redacted) {
-            deepseek = await readDeepseekBalanceCached()
+            deepseek = await readDeepseekBalanceCached(force)
           }
-          sendJson(res, 200, { ok: true, peak, deepseek })
+          sendJson(res, 200, { ok: true, peak, deepseek, currentModel: currentModelSelection() })
           return
         }
         if (url.searchParams.get('deepseekModels') === '1') {

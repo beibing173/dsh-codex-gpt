@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { fetchDeepseekBalance, parseDeepseekBalance, peakState } from '../deepseek.js'
+import { fetchDeepseekBalance, parseDeepseekBalance, peakState, balanceUrl, PUBLIC_BASE_URL } from '../deepseek.js'
 
 /** 北京时间转时间戳（UTC+8）。 */
 function beijing(year, month, day, hour, minute) {
@@ -69,6 +69,26 @@ test('parseDeepseekBalance: 字段缺失不崩，也不编数字', () => {
   assert.equal(parseDeepseekBalance({}).available, false)
   assert.equal(parseDeepseekBalance({ balance_infos: [] }).total, null)
   assert.equal(parseDeepseekBalance({ balance_infos: [{ currency: 'CNY', total_balance: 'oops' }] }).total, null)
+})
+
+test('balanceUrl: 默认官方端点，DEEPSEEK_BASE_URL 可覆盖（与适配器同口径）', () => {
+  assert.equal(balanceUrl(), `${PUBLIC_BASE_URL}/user/balance`)
+  assert.equal(balanceUrl(''), `${PUBLIC_BASE_URL}/user/balance`)
+  assert.equal(balanceUrl('https://gateway.example.com/'), 'https://gateway.example.com/user/balance')
+  assert.equal(balanceUrl('https://gw.example.com/v1'), 'https://gw.example.com/v1/user/balance')
+})
+
+test('fetchDeepseekBalance: 传 baseUrl 时打到覆盖后的端点', async () => {
+  let seen = ''
+  await fetchDeepseekBalance({
+    apiKey: 'sk-test',
+    baseUrl: 'https://gw.example.com/',
+    fetchImpl: async (url) => {
+      seen = url
+      return { ok: true, status: 200, text: async () => JSON.stringify({ balance_infos: [{ currency: 'CNY', total_balance: '1.00' }] }) }
+    },
+  })
+  assert.equal(seen, 'https://gw.example.com/user/balance')
 })
 
 test('fetchDeepseekBalance: 没配 Key 不打网络', async () => {

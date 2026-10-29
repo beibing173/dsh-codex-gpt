@@ -448,7 +448,6 @@ window.__ModuleLoader__.load({
     /** 侧边栏底部 Codex 用量卡片；拿不到数据或侧栏收起时不渲染。 */
     /** 侧边栏底部用量卡片：可在 ChatGPT / DeepSeek / 其它已配置的 AI 之间切换。 */
     const USAGE_ACCOUNTS_PATH = '/api/deepseek-usage/accounts'
-    const USAGE_TAB_KEY = 'dsh-codex-usage-tab'
     /** provider id → 展示名（缺省用接口返回的 displayName）。 */
     const USAGE_LABELS = {
       chatgpt: 'ChatGPT',
@@ -524,9 +523,9 @@ window.__ModuleLoader__.load({
       }, [])
 
       /** DeepSeek 余额 + 当前峰谷时段（本插件自己算，不依赖别的插件）。 */
-      const loadDashboard = useCallback(async () => {
+      const loadDashboard = useCallback(async (force = false) => {
         try {
-          const data = await request(API + '?dashboard=1', {
+          const data = await request(API + '?dashboard=1' + (force ? '&force=1' : ''), {
             headers: { Accept: 'application/json' },
             cache: 'no-store',
           })
@@ -538,43 +537,66 @@ window.__ModuleLoader__.load({
         }
       }, [])
 
-      const reload = useCallback(async () => {
-        const seq = ++requestSeq.current
-        setBusy(true)
-        await Promise.all([loadChatgpt(), loadProviders(), loadPreferred(), loadDashboard()])
-        if (mounted.current && seq === requestSeq.current) {
-          setBusy(false)
-          setClock(Date.now())
-        }
-      }, [loadChatgpt, loadProviders, loadPreferred, loadDashboard])
+      const reload = useCallback(
+        async (force = false) => {
+          const seq = ++requestSeq.current
+          setBusy(true)
+          await Promise.all([loadChatgpt(), loadProviders(), loadPreferred(), loadDashboard(force)])
+          if (mounted.current && seq === requestSeq.current) {
+            setBusy(false)
+            setClock(Date.now())
+          }
+        },
+        [loadChatgpt, loadProviders, loadPreferred, loadDashboard],
+      )
 
       useEffect(() => {
         mounted.current = true
         if (!wide) return undefined
-        try {
-          const saved = typeof localStorage !== 'undefined' ? localStorage.getItem(USAGE_TAB_KEY) : ''
-          if (saved) setTab(saved)
-        } catch {
-          // 隐私模式禁用 storage 时忽略
-        }
         void reload()
         const timer = setInterval(() => {
           if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return
           void reload()
         }, 60_000)
+        // auto 模式要「跟着当前模型走」：3 秒读一次本地快照，换模型几乎立刻跟上。
+        const followTimer = setInterval(() => {
+          if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return
+          void loadPreferred()
+        }, 3_000)
+        // 余额要「准」：10 秒单独刷一次看板（宿主侧也有 10 秒缓存，不会打爆上游）。
+        const dashTimer = setInterval(() => {
+          if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return
+          void loadDashboard()
+        }, 10_000)
         // 峰谷倒计时需要比整体刷新更勤一点（只改本地时钟，不请求网络）。
         const clockTimer = setInterval(() => setClock(Date.now()), 30_000)
         const onVisible = () => {
-          if (typeof document !== 'undefined' && document.visibilityState === 'visible') void reload()
+          if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
+            void loadPreferred()
+            void loadDashboard(true)
+            void reload()
+          }
         }
         if (typeof document !== 'undefined') document.addEventListener('visibilitychange', onVisible)
         return () => {
           mounted.current = false
           clearInterval(timer)
+          clearInterval(followTimer)
+          clearInterval(dashTimer)
           clearInterval(clockTimer)
           if (typeof document !== 'undefined') document.removeEventListener('visibilitychange', onVisible)
         }
-      }, [reload, wide])
+      }, [loadDashboard, loadPreferred, reload, wide])
+
+      // 模型一换，就取消手动切换、回到「跟随当前模型」。
+      const lastModelKey = useRef('')
+      useEffect(() => {
+        const key = currentModel ? `${currentModel.provider}|${currentModel.model}` : ''
+        if (key && key !== lastModelKey.current) {
+          lastModelKey.current = key
+          setTab('')
+        }
+      }, [currentModel])
 
       /** 可切换的 AI 列表：ChatGPT 第一，DeepSeek 第二（本插件自己算），其余来自用量插件（若装了）。 */
       const tabs = useMemo(() => {
@@ -610,9 +632,9 @@ window.__ModuleLoader__.load({
           : 'chatgpt'
       const active = tabs.find((item) => item.id === activeId) || tabs[0]
 
-      /** 点标题文字 = 刷新当前这一家。 */
+      /** 点标题文字 = 刷新当前这一家（绕过宿主缓存，立刻打上游）。 */
       const refreshActive = useCallback(async () => {
-        await reload()
+        await reload(true)
       }, [reload])
 
       /** 点卡片空白处 = 切到下一家（ChatGPT → DeepSeek → 其它 AI → ChatGPT）。 */
@@ -623,12 +645,8 @@ window.__ModuleLoader__.load({
           await reload()
           return
         }
+        // 只做临时覆盖，不写 localStorage：换模型时会自动回到「跟随当前模型」。
         setTab(next.id)
-        try {
-          if (typeof localStorage !== 'undefined') localStorage.setItem(USAGE_TAB_KEY, next.id)
-        } catch {
-          // 忽略
-        }
         await reload()
       }, [activeId, reload, tabs])
 
