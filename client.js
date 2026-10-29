@@ -126,8 +126,12 @@ window.__ModuleLoader__.load({
       return h(
         'span',
         {
+          role: 'switch',
+          'aria-checked': on ? 'true' : 'false',
+          onClick: props.onClick,
           style: {
             ...styles.toggleTrack,
+            cursor: props.onClick ? 'pointer' : undefined,
             background: on ? 'var(--dsw-specific-accent, #4d6bfe)' : styles.toggleTrack.background,
           },
         },
@@ -792,7 +796,7 @@ window.__ModuleLoader__.load({
             h(
               'label',
               { style: { display: 'inline-flex', alignItems: 'center', gap: '8px', cursor: 'pointer' } },
-              h(ToggleBox, { on: autoConsult }),
+              h(ToggleBox, { on: autoConsult, onClick: () => setAutoConsult(!autoConsult) }),
               h(
                 'span',
                 { onClick: () => setAutoConsult(!autoConsult), style: { fontSize: '13px' } },
@@ -803,7 +807,7 @@ window.__ModuleLoader__.load({
           h(
             'div',
             { style: styles.row },
-            h(ToggleBox, { on: allowLan }),
+            h(ToggleBox, { on: allowLan, onClick: () => setAllowLan(!allowLan) }),
             h(
               'span',
               { onClick: () => setAllowLan(!allowLan), style: { fontSize: '13px', cursor: 'pointer' } },
@@ -813,7 +817,7 @@ window.__ModuleLoader__.load({
           h(
             'div',
             { style: styles.row },
-            h(ToggleBox, { on: delegateLight }),
+            h(ToggleBox, { on: delegateLight, onClick: () => setDelegateLight(!delegateLight) }),
             h(
               'span',
               { onClick: () => setDelegateLight(!delegateLight), style: { fontSize: '13px', cursor: 'pointer' } },
