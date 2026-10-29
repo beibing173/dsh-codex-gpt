@@ -155,6 +155,21 @@ function createHarness(initialConfig = {}) {
         handle.replace = () => {}
         return handle
       },
+      listProviders() {
+        return [
+          { id: 'deepseek-account', name: 'DeepSeek Account' },
+          { id: 'chatgpt-codex', name: 'ChatGPT' },
+        ]
+      },
+      async listModels() {
+        return [{ provider: 'deepseek-account', id: 'deepseek-v4.1-flash', name: 'DeepSeek V4.1 Flash' }]
+      },
+      async *stream() {
+        yield { type: 'block-start', index: 0, blockType: 'text' }
+        yield { type: 'text-delta', index: 0, text: '整理后的结果' }
+        yield { type: 'block-end', index: 0, block: { type: 'text', text: '整理后的结果' } }
+        yield { type: 'finish', reason: { kind: 'stop' } }
+      },
     },
     attachments: {
       async readImage() {
@@ -233,8 +248,10 @@ function findTool(harness) {
   return tool
 }
 
-async function runTool(harness, args, sessionId) {
-  return findTool(harness).execute(args, { agent: { id: sessionId }, signal: undefined })
+async function runTool(harness, args, sessionId, name = 'codex') {
+  const tool = name === 'codex' ? findTool(harness) : harness.tools.find((item) => item.name === name)
+  assert.ok(tool, `${name} 工具未注册`)
+  return tool.execute(args, { agent: { id: sessionId }, signal: undefined })
 }
 
 /** mock Codex 后端：模型列表 + SSE 回答。 */
@@ -365,11 +382,24 @@ test('已授权 + 已登录：调用 Codex 后端并返回结果', async (t) => 
   const text = await runTool(harness, { task: '审查并发代码', mode: 'analyze', context: '代码...' }, sessionId)
   assert.match(text, /Codex · gpt-5-codex/)
   assert.match(text, /专业分析结果/)
+  assert.match(text, /该部分内容已交由 ChatGPT（gpt-5-codex）处理/)
   assert.equal(calls.length, 1)
   assert.equal(calls[0].url, 'https://chatgpt.com/backend-api/codex/responses')
   const body = JSON.parse(calls[0].init.body)
   assert.equal(body.model, 'gpt-5-codex')
   assert.match(body.input[0].content[0].text, /审查并发代码/)
+})
+
+test('deepseek_delegate：未开启时提示，开启后标注「已交由 DeepSeek 处理」', async () => {
+  writeAuth()
+  const offHarness = createHarness()
+  const offText = await runTool(offHarness, { task: '整理这段文字' }, nextSession(), 'deepseek_delegate')
+  assert.match(offText, /该功能未开启/)
+
+  const onHarness = createHarness({ delegateLightTasks: true })
+  const onText = await runTool(onHarness, { task: '整理这段文字' }, nextSession(), 'deepseek_delegate')
+  assert.match(onText, /该部分内容已交由 DeepSeek deepseek-v4\.1-flash 处理/)
+  assert.match(onText, /整理后的结果/)
 })
 
 test('会话模型覆盖：setSessionModel 后使用该模型', async (t) => {

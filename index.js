@@ -459,7 +459,11 @@ export function apply(ctx, config) {
           signal,
         })
         const elapsed = ((Date.now() - startedAt) / 1000).toFixed(1)
-        return [`[Codex · ${result.model} · ${mode}] 耗时 ${elapsed}s（${result.endpoint}）`, '', result.text].join('\n')
+        return [
+          `[Codex · ${result.model} · ${mode}] 该部分内容已交由 ChatGPT（${result.model}）处理，耗时 ${elapsed}s（${result.endpoint}）`,
+          '',
+          result.text,
+        ].join('\n')
       } catch (error) {
         const failure = error instanceof Error ? error : new Error(String(error))
         if (failure.name === 'AbortError' || failure.name === 'TimeoutError') {
@@ -521,7 +525,7 @@ export function apply(ctx, config) {
         throw new Error(chunk.reason.failure?.message || 'DeepSeek 调用失败')
       }
     }
-    return text.trim()
+    return { text: text.trim(), provider, model }
   }
 
   ctx.tools.register({
@@ -553,8 +557,9 @@ export function apply(ctx, config) {
           ? AbortSignal.any([exec.signal, timeout])
           : timeout
       try {
-        const text = await runDeepSeek(prompt, signal)
-        return text || '（DeepSeek 没有返回内容）'
+        const outcome = await runDeepSeek(prompt, signal)
+        const label = `[DeepSeek · ${outcome.model} · 轻任务委派] 该部分内容已交由 DeepSeek ${outcome.model} 处理`
+        return outcome.text ? `${label}\n\n${outcome.text}` : `${label}\n\n（DeepSeek 没有返回内容）`
       } catch (error) {
         if (error && (error.name === 'AbortError' || error.name === 'TimeoutError')) {
           return 'DeepSeek 调用超时或被取消。'
