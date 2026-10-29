@@ -162,3 +162,10 @@ test('设置页每个可见文案都经过 L()/t()（防止以后新加中文漏
   const calls = (body.match(/\bL\(/g) || []).length - 1 // 减去 L 的定义
   assert.ok(calls >= 60, `设置页只有 ${calls} 处做了双语包装，疑似漏翻`)
 })
+
+test('autoFallback: 非本插件的模型默认显示 DeepSeek（只有 openai-codex 才显示 ChatGPT）', () => {
+  // 逻辑在 CodexUsageCard 内联，这里用源码断言锁定兜底分支，防止回退成 chatgpt。
+  const card = source.slice(source.indexOf('const autoTabId = useMemo'), source.indexOf('const preferredId ='))
+  assert.ok(card.includes("provider === 'openai-codex'"), 'ChatGPT 分支应只在规范 id 时命中')
+  assert.ok(/tabs.some\(\(item\) => item\.id === provider\) \? provider : 'deepseek'/.test(card), '兜底应显示 DeepSeek，而不是 ChatGPT')
+})

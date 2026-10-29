@@ -1372,13 +1372,23 @@ export function apply(ctx, config) {
 
   // ── 5. LLM 适配器：把 ChatGPT (Codex) 接进模型选择器 ───────────────────────
   // 选中该 provider 的模型后，对话直接由 GPT 处理（读上下文、流式回复、工具调用）。
-  // 规范 id 是 openai-codex（生态对齐）；同时保留旧 id chatgpt-codex 注册，
-  // 让升级前保存过模型选择的老会话依然可路由（否则它们会变成不可路由而发不出消息）。
+  // 只注册规范 id `openai-codex`：旧 id `chatgpt-codex` 不再出现在模型选择器里
+  // （否则会多出一个「ChatGPT（旧 id）」分组）；老会话的选择由下面的迁移改写。
   try {
     ctx.effect(() => {
       try {
+        // 迁移：老版本存下的 `chatgpt-codex` 默认选择改写成规范 id，老会话照样能发消息。
+        try {
+          const adm = ctx.get('agentDefaultModel')
+          const selection = adm && typeof adm.currentSelection === 'function' ? adm.currentSelection() : null
+          if (selection && LEGACY_PROVIDER_IDS.includes(selection.provider) && typeof adm.saveSelection === 'function') {
+            void Promise.resolve(adm.saveSelection({ ...selection, provider: PROVIDER_ID })).catch(() => {})
+          }
+        } catch {
+          // 迁移失败不影响适配器注册
+        }
         const handle = ctx.llm.registerAdapter(
-          [PROVIDER_ID, ...LEGACY_PROVIDER_IDS],
+          [PROVIDER_ID],
           createCodexGptAdapter({
             getCredential: async (options) => {
               // 注意：这里在模型列表的高频路径上，绝不做凭证写入（会触发刷新风暴）。

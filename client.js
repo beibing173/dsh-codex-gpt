@@ -912,7 +912,9 @@ window.__ModuleLoader__.load({
         const provider = (sessionModel && sessionModel.provider) || (currentModel && currentModel.provider) || ''
         if (provider === 'openai-codex' || provider === 'chatgpt-codex') return 'chatgpt'
         if (provider.startsWith('deepseek')) return 'deepseek'
-        return tabs.some((item) => item.id === provider) ? provider : 'chatgpt'
+        // 其它（含不支持/不认识的 provider）：有对应余额卡就用它，否则退 DeepSeek 余额。
+        // 只有确实在用本插件的 ChatGPT 时才显示 ChatGPT 限额，避免默认停在 GPT。
+        return tabs.some((item) => item.id === provider) ? provider : 'deepseek'
       }, [currentModel, sessionModel, tabs])
 
       const preferredId = preferred === 'auto' ? autoTabId : preferred

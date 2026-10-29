@@ -155,8 +155,8 @@ export function createCodexGptAdapter(opts) {
   function providerInfo(provider) {
     const requested = requestedProviderId(provider)
     const id = requested || PROVIDER_ID
-    // 旧 id 单独起个名字，免得模型选择器里出现两个一模一样的「ChatGPT」分组。
-    return { id, name: LEGACY_PROVIDER_IDS.includes(id) ? `${PROVIDER_NAME}（旧 id）` : PROVIDER_NAME }
+    // 旧 id 不再单独注册进模型选择器，只用于内部路由兼容；显示名统一为 ChatGPT。
+    return { id, name: PROVIDER_NAME }
   }
 
   /** LlmModelInfo 只允许 provider/id/name/description/inputModalities。 */

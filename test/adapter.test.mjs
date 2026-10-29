@@ -22,7 +22,8 @@ test('provider id：规范 id 与旧别名都能路由', async () => {
 
   // providerInfo 的 id 必须等于注册时的路由 id，否则 DSH 会拒绝这条路由。
   assert.deepEqual(adapter.providerInfo(PROVIDER_ID), { id: 'openai-codex', name: 'ChatGPT' })
-  assert.deepEqual(adapter.providerInfo('chatgpt-codex'), { id: 'chatgpt-codex', name: 'ChatGPT（旧 id）' })
+  // 旧 id 只用于内部路由兼容，显示名与规范 id 一致（模型选择器里不再单列一组）。
+  assert.deepEqual(adapter.providerInfo('chatgpt-codex'), { id: 'chatgpt-codex', name: 'ChatGPT' })
 
   const canonical = await adapter.listModels(PROVIDER_ID)
   assert.deepEqual(canonical.map((m) => m.provider), ['openai-codex'])
