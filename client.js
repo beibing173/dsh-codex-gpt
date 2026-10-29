@@ -207,6 +207,9 @@ window.__ModuleLoader__.load({
     /** 输入框左侧的授权胶囊按钮（会话作用域）。 */
     function CodexToggle(props) {
       const slotProps = props || {}
+      const lang = useLang(slotProps.locale)
+      /** 就地双语：中文 / 英文（英文缺译时回退中文）。 */
+      const L = (zh, en) => (lang === 'en' ? en : zh)
       // slots 可能把 register({inject}) 的返回值直接铺成 props，也可能挂在 props.inject 下，
       // 两种都要认，否则「当前模型」永远读不到、胶囊就固定显示同一个名字。
       const bag = slotProps.inject && typeof slotProps.inject === 'object' ? slotProps.inject : null
@@ -275,7 +278,7 @@ window.__ModuleLoader__.load({
 
       const reload = useCallback(async () => {
         if (!sessionId) {
-          setState({ status: 'unavailable', session: null, auth: null, global: null, error: '当前没有会话' })
+          setState({ status: 'unavailable', session: null, auth: null, global: null, error: L('当前没有会话', 'No active session') })
           return
         }
         try {
@@ -319,19 +322,19 @@ window.__ModuleLoader__.load({
           const data = await postOp({ op: 'setSessionEnabled', sessionId, enabled: !enabled })
           setState((prev) => ({ status: 'ready', session: data.session, auth: data.auth, global: prev.global, error: '' }))
         } catch (error) {
-          if (typeof window !== 'undefined') window.alert('ChatGPT 开关失败：' + String(error.message || error))
+          if (typeof window !== 'undefined') window.alert(L('ChatGPT 开关失败：', 'Failed to toggle ChatGPT: ') + String(error.message || error))
         } finally {
           setBusy(false)
         }
       }, [sessionId, enabled, busy, unavailable])
 
       const title = unavailable
-        ? `${label} 状态不可用：` + (state.error || '服务未就绪')
+        ? `${label} ${L('状态不可用：', 'status unavailable: ')}` + (state.error || L('服务未就绪', 'service not ready'))
         : !loggedIn
-          ? '尚未登录 OpenAI 账号：请先到 设置 → ChatGPT 页登录，再点这里授权本会话。'
+          ? L('尚未登录 OpenAI 账号：请先到 设置 → ChatGPT 页登录，再点这里授权本会话。', 'Not signed in to OpenAI yet. Go to Settings → ChatGPT, sign in, then authorize this session here.')
           : enabled
-            ? `本会话已授权 ChatGPT（模型 ${model || '默认'}）。点击撤销授权。`
-            : '本会话未授权 ChatGPT。点击允许本会话在需要时调用 GPT 做专业分析。'
+            ? L(`本会话已授权 ChatGPT（模型 ${model || '默认'}）。点击撤销授权。`, `This session is authorized for ChatGPT (model ${model || 'default'}). Click to revoke.`)
+            : L('本会话未授权 ChatGPT。点击允许本会话在需要时调用 GPT 做专业分析。', 'This session is not authorized for ChatGPT. Click to allow it to call GPT for deeper analysis.')
 
       return h(
         'button',
@@ -341,7 +344,7 @@ window.__ModuleLoader__.load({
           disabled: unavailable || busy,
           title,
           'aria-pressed': enabled ? 'true' : 'false',
-          'aria-label': enabled ? `${label} 已授权，点击撤销` : `${label} 未授权，点击允许`,
+          'aria-label': enabled ? L(`${label} 已授权，点击撤销`, `${label}: authorized, click to revoke`) : L(`${label} 未授权，点击允许`, `${label}: not authorized, click to allow`),
           style: {
             display: 'inline-flex',
             alignItems: 'center',
@@ -399,14 +402,18 @@ window.__ModuleLoader__.load({
       return `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`
     }
 
-    /** 毫秒 → 「x 小时 y 分」/「y 分钟」。 */
-    function formatCountdown(ms) {
+    /** 毫秒 → 当前语言的时长文案（默认中文）。 */
+    function formatCountdown(ms, lang = 'zh') {
       const total = Math.max(0, Math.round(Number(ms) / 60_000))
-      if (total <= 0) return '不到 1 分钟'
+      const en = lang === 'en'
+      if (total <= 0) return en ? 'less than 1 min' : '不到 1 分钟'
       const hours = Math.floor(total / 60)
       const minutes = total % 60
-      if (hours > 0) return minutes > 0 ? `${hours} 小时 ${minutes} 分` : `${hours} 小时`
-      return `${minutes} 分钟`
+      if (hours > 0) {
+        if (!en) return minutes > 0 ? `${hours} 小时 ${minutes} 分` : `${hours} 小时`
+        return minutes > 0 ? `${hours} h ${minutes} min` : `${hours} h`
+      }
+      return en ? `${minutes} min` : `${minutes} 分钟`
     }
 
     const usageStyles = {
@@ -598,6 +605,21 @@ window.__ModuleLoader__.load({
       return typeof value === 'string' ? value : key
     }
 
+    /** 宿主/第三方插件返回的中文提示：英文界面下做一层映射（认不出就原样显示）。 */
+    const HOST_TEXT_EN = {
+      '未配置 DEEPSEEK_API_KEY': 'DEEPSEEK_API_KEY is not configured',
+      '尚未登录 OpenAI 账号': 'Not signed in to OpenAI',
+      '余额接口返回无法解析': 'Balance endpoint returned unparsable data',
+      'lan-redacted': 'Hidden on LAN',
+    }
+    function translateHostText(text, lang) {
+      const raw = String(text == null ? '' : text)
+      if (lang !== 'en') return raw
+      if (HOST_TEXT_EN[raw]) return HOST_TEXT_EN[raw]
+      const http = /^余额接口 HTTP (\S+)$/.exec(raw)
+      if (http) return `Balance endpoint returned HTTP ${http[1]}`
+      return raw
+    }
 
     /**
      * 卡片兜底：任何一个子组件的渲染异常都不该让左下角整块消失。
@@ -616,7 +638,7 @@ window.__ModuleLoader__.load({
           return h(
             'div',
             { style: { fontSize: '11px', opacity: 0.6, padding: '6px 2px' }, title: 'usage card render error' },
-            '暂无用量数据',
+            '暂无用量数据 / No usage data',
           )
         }
         return this.props.children
@@ -913,7 +935,7 @@ window.__ModuleLoader__.load({
           const symbol = data && data.currency === 'CNY' ? '¥' : data && data.currency === 'USD' ? '$' : ''
           const amount = total === null ? '—' : `${symbol}${total.toFixed(2)}`
           const remainMs = peak && Number.isFinite(Number(peak.nextChangeAt)) ? Number(peak.nextChangeAt) - clock : 0
-          const countdown = remainMs > 60_000 ? formatCountdown(remainMs) : ''
+          const countdown = remainMs > 60_000 ? formatCountdown(remainMs, lang) : ''
           const cheap = peak ? peak.isPeak === false : false
           return [
             h(
@@ -945,7 +967,7 @@ window.__ModuleLoader__.load({
               ),
             ),
             data && data.error
-              ? h('div', { key: 'err', style: { ...usageStyles.hint, fontSize: '10px', opacity: 0.5 } }, String(data.error))
+              ? h('div', { key: 'err', style: { ...usageStyles.hint, fontSize: '10px', opacity: 0.5 } }, translateHostText(data.error, lang))
               : null,
           ]
         }
@@ -983,12 +1005,12 @@ window.__ModuleLoader__.load({
           const amount = Number.isFinite(total) ? `${balance.currency === 'CNY' ? '¥' : ''}${total.toFixed(2)}` : '—'
           return [
             h('div', { key: 'balance', style: { ...usageStyles.brand, fontSize: '20px' } }, amount),
-            h('div', { key: 'hint', style: usageStyles.hint }, row.reason ? String(row.reason) : t('accountBalance')),
+            h('div', { key: 'hint', style: usageStyles.hint }, row.reason ? translateHostText(row.reason, lang) : t('accountBalance')),
           ]
         }
         const list = Array.isArray(row.usage && row.usage.windows) ? row.usage.windows : []
         if (list.length === 0) {
-          return [h('div', { key: 'empty', style: usageStyles.hint }, row.reason ? String(row.reason) : t('noUsage'))]
+          return [h('div', { key: 'empty', style: usageStyles.hint }, row.reason ? translateHostText(row.reason, lang) : t('noUsage'))]
         }
         return list.map((window) => {
           const percent = Number(window.percent)
@@ -1012,7 +1034,7 @@ window.__ModuleLoader__.load({
         {
           role: 'status',
           onClick: () => void cycleTab(),
-          title: `点击卡片切换到下一家（当前 ${active.label}）`,
+          title: L(`点击卡片切换到下一家（当前 ${active.label}）`, `Click to switch to the next provider (current: ${active.label})`),
           style: usageStyles.card,
         },
         h(
@@ -1026,7 +1048,7 @@ window.__ModuleLoader__.load({
                 if (event && typeof event.stopPropagation === 'function') event.stopPropagation()
                 void refreshActive()
               },
-              title: `${active.label}：点击刷新`,
+              title: L(`${active.label}：点击刷新`, `${active.label}: click to refresh`),
               style: { ...usageStyles.brand, cursor: 'pointer' },
             },
             active.label,
@@ -1762,7 +1784,8 @@ window.__ModuleLoader__.load({
                 }
               },
             },
-            CodexToggle,
+            (props) =>
+              h(CodexToggle, { ...(props || {}), locale: (props && props.locale) || localeService }),
           ),
         )
         ctx.slots.inject('settings.section', () =>
@@ -1782,7 +1805,7 @@ window.__ModuleLoader__.load({
               name: 'sidebar.footer.action',
               id: 'dsh-codex-usage',
               order: 101,
-              label: 'ChatGPT 用量',
+              label: 'ChatGPT usage',
             },
             (props) =>
               h(
