@@ -1732,7 +1732,9 @@ window.__ModuleLoader__.load({
 
     return {
       name: 'codex-client',
-      inject: ['slots'],
+      // locale 必须显式 inject：不声明时 ctx.locale 是 undefined，只能靠 <html lang> 兜底，
+      // 界面切英文后卡片/设置页会继续中文（这就是之前「英文没加上去」的真正原因）。
+      inject: ['slots', 'locale'],
       apply(ctx) {
         // locale 服务只取一次：渲染时不再访问 ctx 上的 getter，避免取值本身把渲染弄崩。
         // 拿不到就回退中文（组件内另有 <html lang> 兜底探测）。

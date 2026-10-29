@@ -119,3 +119,10 @@ test('locale 快照不稳定时不会抛错（返回值被复用）', () => {
     assert.ok(element)
   }
 })
+
+test('客户端声明了 locale 依赖（否则 ctx.locale 为 undefined，界面切英文不生效）', () => {
+  const { loaded } = loadClientModule()
+  assert.ok(Array.isArray(loaded.inject), 'inject 应为数组')
+  assert.ok(loaded.inject.includes('slots'), 'inject 应包含 slots')
+  assert.ok(loaded.inject.includes('locale'), 'inject 必须包含 locale')
+})
