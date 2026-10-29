@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Codex 专业分析桥",
+    "description": "按会话手动授权 Codex：普通任务继续由 DeepSeek（V4.1）处理，高难度或需要专业分析时可自主调用 OpenAI Codex/GPT，模型可选。"
+  }
+}

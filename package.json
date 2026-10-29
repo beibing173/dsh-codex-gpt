@@ -1,0 +1,46 @@
+{
+  "name": "dsh-codex",
+  "version": "0.1.0",
+  "private": true,
+  "description": "DeepSeek Harness 的 Codex 桥接插件：按会话手动授权，按任务强度自主调用 OpenAI Codex/GPT 做专业分析与构建；未授权时保持纯 DeepSeek 模式。",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "codex.js",
+    "usage.js",
+    "network.js",
+    "client.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "README.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-ui-settings"
+      ]
+    }
+  },
+  "keywords": [
+    "dsh-plugin",
+    "deepseek-harness",
+    "codex",
+    "openai",
+    "gpt"
+  ],
+  "license": "MIT"
+}

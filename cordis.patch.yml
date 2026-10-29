@@ -1,0 +1,12 @@
+# dsh-codex bundle patch —— 主机组合层。
+#
+# 单行完成全部能力：
+#   - `codex` 工具：仅在本会话被用户手动授权后可用，调用 OpenAI Codex/GPT；
+#   - 每会话提示策略段 `dsh-codex-policy`：告诉模型何时该用/不该用 Codex；
+#   - `/dsh-codex-api` 状态路由：浏览器侧「Codex」按钮与设置页读写授权与配置；
+#   - 浏览器侧入口由 package.json 的 dsh.client 声明自动装载 ./client。
+# 纯 insert(id/name) 可热挂载免重启。
+- insert:
+    - id: dsh-codex
+      name: 'dsh-codex'
+      config: {}

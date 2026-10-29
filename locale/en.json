@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Codex Bridge",
+    "description": "Per-session Codex authorization plus on-demand GPT analysis: normal tasks stay on DeepSeek, heavy tasks can be escalated to OpenAI Codex/GPT."
+  }
+}
