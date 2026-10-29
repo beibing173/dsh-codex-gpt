@@ -722,6 +722,8 @@ window.__ModuleLoader__.load({
     }
     function translateHostText(text, lang) {
       const raw = String(text == null ? '' : text)
+      // Node 抛的 "fetch failed" 对用户没信息量，直接说清是网络/代理问题。
+      if (/^fetch failed$/i.test(raw.trim())) return '网络请求失败（检查连接或代理）'
       if (lang !== 'en') return raw
       if (HOST_TEXT_EN[raw]) return HOST_TEXT_EN[raw]
       const http = /^余额接口 HTTP (\S+)$/.exec(raw)
@@ -1138,7 +1140,9 @@ window.__ModuleLoader__.load({
           }
           const total = data && Number.isFinite(Number(data.total)) ? Number(data.total) : null
           const symbol = data && data.currency === 'CNY' ? '¥' : data && data.currency === 'USD' ? '$' : ''
-          const amount = total === null ? '—' : `${symbol}${total.toFixed(2)}`
+          // 查询失败（网络/代理/上游错误）时绝不显示成 0.00，用 — 表示「没读到」。
+          const failed = Boolean(data && data.error)
+          const amount = failed || total === null ? '—' : `${symbol}${total.toFixed(2)}`
           const remainMs = peak && Number.isFinite(Number(peak.nextChangeAt)) ? Number(peak.nextChangeAt) - clock : 0
           const countdown = remainMs > 60_000 ? formatCountdown(remainMs, lang) : ''
           const cheap = peak ? peak.isPeak === false : false
