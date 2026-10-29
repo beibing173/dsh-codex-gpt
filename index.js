@@ -394,12 +394,8 @@ export function apply(ctx, config) {
   /** LLM 适配器注册状态（诊断用，展示在状态路由里）。 */
   let llmAdapterStatus = { registered: false, error: '尚未注册', directory: { registered: false, error: '尚未注册' } }
 
-  const getModels = async (credential, force = false) => {
-    if (!credential) return { models: [], error: '' }
-    if (!force && modelsCache.at > 0 && Date.now() - modelsCache.at < MODELS_TTL_MS) {
-      return { models: modelsCache.models, error: modelsCache.error }
-    }
-    // 并发（设置页刷新 + 卡片轮询）只打一次上游。
+  /** 拉一次模型目录（单飞）；并发调用共用同一次上游请求。 */
+  const refreshModels = async (credential) => {
     if (inflightModels) return inflightModels
     inflightModels = (async () => {
       try {
@@ -420,6 +416,20 @@ export function apply(ctx, config) {
     } finally {
       inflightModels = null
     }
+  }
+
+  const getModels = async (credential, force = false) => {
+    if (!credential) return { models: [], error: '' }
+    const fresh = modelsCache.at > 0 && Date.now() - modelsCache.at < MODELS_TTL_MS
+    if (!force && fresh) {
+      return { models: modelsCache.models, error: modelsCache.error }
+    }
+    // 过期但还有旧目录：先给旧的，后台续期，别让设置页/下拉框等网络。
+    if (!force && modelsCache.models.length > 0) {
+      void refreshModels(credential)
+      return { models: modelsCache.models, error: modelsCache.error }
+    }
+    return refreshModels(credential)
   }
 
   /** 当前登录状态（不返回任何 token）。 */
@@ -1035,6 +1045,8 @@ export function apply(ctx, config) {
             // 上游目录拿不到时（未登录/429/凭证刷新失败）至少保留一个可路由模型，
             // 避免 DSH 模型选择器变空导致当前会话“点发送没反应”。
             fallbackModel: configuredModel() || DEFAULT_MODEL,
+            // 激活后预热一次目录，模型选择器首次打开不再等网络。
+            preload: true,
             readImage: async (attachmentRef) => {
               const stored = await ctx.attachments.readImage(attachmentRef)
               // 以读取结果为准：ref 上不一定带 mediaType，否则会拼出 data:undefined;base64 并被静默丢图。

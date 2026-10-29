@@ -244,6 +244,9 @@ export async function ensureAccessToken(store, options = {}) {
   const credential = describeCredential(record)
   if (!credential) return undefined
   const force = options && options.force === true
+  // 只读场景（例如列模型目录）只需要「有 token 就行」，不要在这里等网络刷新，
+  // 否则模型选择器会卡在「正在刷新模型列表」。
+  if (options && options.noRefresh === true) return credential
   if (!force && credential.expiresAt - Date.now() > 60_000) return credential
   if (!credential.refreshToken) return credential
   try {

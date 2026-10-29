@@ -199,3 +199,60 @@ test('listModels: 凭证/目录不可用时返回兜底模型，绝不返回空�
     ['gpt-9-sol'],
   )
 })
+
+test('listModels: 目录没过期时不等待网络，直读缓存', async () => {
+  let calls = 0
+  const adapter = createCodexGptAdapter({
+    getCredential: async () => ({ accessToken: 'at' }),
+    fetchModels: async () => {
+      calls += 1
+      return [{ slug: 'gpt-9-sol' }]
+    },
+    fallbackModel: 'gpt-5.6-sol',
+  })
+  const first = await adapter.listModels(PROVIDER_ID)
+  assert.deepEqual(first.map((m) => m.id), ['gpt-9-sol'])
+
+  // 第二次（DSH 打开选择器/切换会话时）必须命中缓存：既不重复请求上游，也不等待。
+  const started = Date.now()
+  const second = await adapter.listModels(PROVIDER_ID)
+  const elapsed = Date.now() - started
+  assert.deepEqual(second.map((m) => m.id), ['gpt-9-sol'])
+  assert.equal(calls, 1)
+  assert.ok(elapsed < 50, `缓存命中应瞬时返回，实际 ${elapsed}ms`)
+})
+
+test('listModels: 目录过期时先返回旧缓存，后台再续期', async () => {
+  let clock = 1_000_000
+  let revision = 1
+  const adapter = createCodexGptAdapter({
+    getCredential: async () => ({ accessToken: 'at' }),
+    fetchModels: async () => [{ slug: `gpt-${revision}` }],
+    fallbackModel: 'gpt-5.6-sol',
+    now: () => clock,
+  })
+  await adapter.listModels(PROVIDER_ID)
+  revision = 2
+  clock += 6 * 60 * 1000 // 超过 5 分钟 TTL
+
+  const stale = await adapter.listModels(PROVIDER_ID)
+  assert.deepEqual(stale.map((m) => m.id), ['gpt-1'], '过期时先给旧缓存，不阻塞')
+
+  // 后台刷新完成后，下一次调用拿到新目录。
+  await new Promise((resolve) => setTimeout(resolve, 10))
+  const refreshed = await adapter.listModels(PROVIDER_ID)
+  assert.deepEqual(refreshed.map((m) => m.id), ['gpt-2'])
+})
+
+test('listModels: 冷启动上游卡住时按超时返回兜底，不阻塞模型选择器', async () => {
+  const adapter = createCodexGptAdapter({
+    getCredential: async () => ({ accessToken: 'at' }),
+    fetchModels: () => new Promise(() => {}),
+    fallbackModel: 'gpt-5.6-sol',
+  })
+  const started = Date.now()
+  const models = await adapter.listModels(PROVIDER_ID)
+  const elapsed = Date.now() - started
+  assert.deepEqual(models.map((m) => m.id), ['gpt-5.6-sol'])
+  assert.ok(elapsed < 3000, `冷启动必须有上限，实际 ${elapsed}ms`)
+})

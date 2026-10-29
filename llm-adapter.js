@@ -51,56 +51,92 @@ export function createCodexGptAdapter(opts) {
   const now = typeof opts.now === 'function' ? opts.now : Date.now
   /** 模型目录缓存：DSH 会频繁刷新模型列表，缓存 5 分钟并容忍 429。 */
   const MODELS_TTL_MS = 5 * 60 * 1000
+  /** 冷启动最长等待：超过就直接给兜底，后台继续拉，绝不卡住模型选择器。 */
+  const MODELS_COLD_WAIT_MS = 1200
   let modelsCache = { at: 0, models: [] }
+  /** 目录刷新单飞：并发刷新只打一次上游。 */
+  let modelsInflight = null
+
+  /** 后台刷新模型目录（单飞、静默失败）。 */
+  function refreshModels(credential) {
+    if (modelsInflight) return modelsInflight
+    modelsInflight = (async () => {
+      try {
+        const models = normalizeModels(await fetchModels(credential))
+        if (models.length > 0) modelsCache = { at: now(), models }
+        return modelsCache.models
+      } catch {
+        // 限流/网络错误时退回旧缓存，绝不把 429 抛成 UI 红字。
+        return modelsCache.models
+      } finally {
+        modelsInflight = null
+      }
+    })()
+    return modelsInflight
+  }
 
   async function loadModels(credential) {
     if (modelsCache.models.length > 0 && now() - modelsCache.at < MODELS_TTL_MS) {
       return modelsCache.models
     }
-    try {
-      const models = await fetchModels(credential)
-      if (Array.isArray(models) && models.length > 0) {
-        modelsCache = { at: now(), models }
-      }
-      return modelsCache.models
-    } catch {
-      // 限流/网络错误时退回旧缓存，绝不把 429 抛成 UI 红字。
-      return modelsCache.models
-    }
+    return refreshModels(credential)
+  }
+
+  // 插件激活后预热一次目录：第一次打开模型选择器就不用等网络。
+  if (opts.preload === true) {
+    const timer = setTimeout(() => {
+      Promise.resolve()
+        .then(() => getCredential({ noRefresh: true }))
+        .then((credential) => (credential && credential.accessToken ? refreshModels(credential) : null))
+        .catch(() => {})
+    }, 1500)
+    if (timer && typeof timer.unref === 'function') timer.unref()
   }
 
   function providerInfo() {
     return { id: PROVIDER_ID, name: PROVIDER_NAME }
   }
 
-  async function listModels(provider) {
-    assertProvider(provider)
-    let credential
-    // 目录查询本身绝不能让 DSH 报错：凭证刷新失败/上游 429 时退化为兜底列表，
-    // 否则模型选择器会直接变空，当前会话选中的模型不可路由 → 点发送没反应。
-    try {
-      credential = await getCredential()
-    } catch {
-      credential = undefined
-    }
-    let models = []
-    if (credential?.accessToken) {
-      try {
-        models = normalizeModels(await loadModels(credential))
-      } catch {
-        models = []
-      }
-    }
-    if (models.length === 0) {
-      models = fallbackModels()
-    }
-    // LlmModelInfo 只允许 provider/id/name/description/inputModalities。
+  /** LlmModelInfo 只允许 provider/id/name/description/inputModalities。 */
+  function toModelInfos(models) {
     return models.map((model) => ({
       provider: PROVIDER_ID,
       id: model.slug,
       name: model.displayName || model.slug,
       inputModalities: ['text', 'image'],
     }))
+  }
+
+  async function listModels(provider) {
+    assertProvider(provider)
+    const cached = modelsCache.models
+    const fresh = cached.length > 0 && now() - modelsCache.at < MODELS_TTL_MS
+
+    // 列模型绝不能让 UI 等网络：凭证只要旧的就够，禁止在这里触发 token 刷新。
+    let credential
+    try {
+      credential = await getCredential({ noRefresh: true })
+    } catch {
+      credential = undefined
+    }
+    const hasCredential = Boolean(credential && credential.accessToken)
+
+    // 有目录就立刻返回；过期则后台续期（stale-while-revalidate）。
+    if (cached.length > 0) {
+      if (!fresh && hasCredential) void refreshModels(credential)
+      return toModelInfos(cached)
+    }
+    if (!hasCredential) return toModelInfos(fallbackModels())
+
+    // 冷启动：最多等 MODELS_COLD_WAIT_MS，超时先给兜底，刷新继续在后台跑。
+    const raced = await Promise.race([
+      refreshModels(credential),
+      new Promise((resolve) => {
+        setTimeout(() => resolve(null), MODELS_COLD_WAIT_MS)
+      }),
+    ])
+    const models = raced && raced.length > 0 ? raced : fallbackModels()
+    return toModelInfos(models)
   }
 
   /** 上游目录不可用时的兜底清单（至少一个，保证 provider 可路由）。 */
