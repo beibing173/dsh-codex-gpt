@@ -30,6 +30,18 @@
 
 ### 3. 用量看板（兼容 ChatGPT 的自适应看板）
 
+**支持哪些 AI、数据从哪来：**
+
+| 显示的一页 | 数据来源 | 显示内容 |
+|---|---|---|
+| **ChatGPT** | 本插件 OAuth → `chatgpt.com/backend-api/wham/usage` | 5 小时 / 每周限额、订阅状态与到期日、可用重置卡 |
+| **DeepSeek** | 本插件直连 `api.deepseek.com/user/balance`（跟随 `DEEPSEEK_BASE_URL`） | 实时余额、高峰/空闲时段与倒计时 |
+| **Trae**（可选） | [`dsh-connect-trae`](https://www.npmjs.com/package/dsh-connect-trae) 的 `/plugins/dsh-connect-trae/usage` | 剩余积分（附累计发放、签到状态） |
+| **WorkBuddy**（可选） | [`dsh-connect-workbuddy`](https://www.npmjs.com/package/dsh-connect-workbuddy) 的 `/plugins/dsh-connect-workbuddy/usage` | 剩余积分（附临近过期提示、签到状态） |
+| **Kimi / GLM / OpenRouter / MiniMax …**（可选） | `@dougen/dsh-deepseek-usage` 的 `/api/deepseek-usage/accounts` | 该家余额或用量窗口 |
+
+可选依赖只需「装了就有」，**不装也不影响本插件自身**（ChatGPT + DeepSeek 由本插件自带）。
+
 - 侧边栏底部一张卡片，**默认「自动」**：跟着当前在用的模型走——用 ChatGPT 就显示 ChatGPT，用 DeepSeek 就显示 DeepSeek；也可以在设置里固定成某一家（`用量卡默认显示`）。
 - **点卡片空白处**：在 ChatGPT → DeepSeek → 其它已配置的 AI 之间循环切换。
 - **点当前那家的名字**：立刻重新读取（刷新）这一家的数据。
