@@ -558,6 +558,18 @@ window.__ModuleLoader__.load({
       return null
     }
 
+    /**
+     * 积分显示：整数直接显示，带小数的最多保留两位（去掉多余的 0）。
+     * 上游累加会产生 5494.9100000001 这种浮点噪声，不能原样丢给用户。
+     */
+    function formatPoints(value) {
+      if (value === null || value === undefined || value === '') return '—'
+      const number = Number(value)
+      if (!Number.isFinite(number)) return '—'
+      if (Number.isInteger(number)) return String(number)
+      return number.toFixed(2).replace(/\.?0+$/, '')
+    }
+
     /** provider id → 展示名（缺省用接口返回的 displayName）。 */
     const USAGE_LABELS = {
       chatgpt: 'ChatGPT',
@@ -1112,7 +1124,7 @@ window.__ModuleLoader__.load({
               h(
                 'span',
                 { style: { ...usageStyles.brand, fontSize: '19px', letterSpacing: 0 } },
-                total === null ? '—' : String(total),
+                total === null ? '—' : formatPoints(total),
               ),
               h('span', { style: { ...usageStyles.hint, fontSize: '10px' } }, '积分'),
             ),
@@ -2008,7 +2020,7 @@ window.__ModuleLoader__.load({
       name: 'codex-client',
       inject: ['slots'],
       // 仅供测试：校验第三方积分解析与文案字典（不影响运行时）。
-      __test: { parseConnectPoints, I18N, translate, detectLang, normalizeLang },
+      __test: { parseConnectPoints, formatPoints, I18N, translate, detectLang, normalizeLang },
       apply(ctx) {
         // slots 服务：优先用注入的 ctx.slots，取不到再通过 ctx.get('slots') 兜底。
         // 都拿不到就安静退出——不能让一个 slot 依赖把整个客户端插件（含其它 UI）带崩。

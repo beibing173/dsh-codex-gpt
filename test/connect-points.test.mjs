@@ -40,7 +40,9 @@ function loadModule() {
   return loaded
 }
 
-const parse = loadModule().__test.parseConnectPoints
+const api = loadModule().__test
+const parse = api.parseConnectPoints
+const formatPoints = api.formatPoints
 
 test('Trae：剩余取 credits.available，累计 total 只作说明', () => {
   const doc = {
@@ -138,4 +140,14 @@ test('卡片页顺序：DeepSeek → ChatGPT → 其它 AI → WorkBuddy → Tra
   assert.ok(wb >= 0 && te >= 0, 'connect 配置缺少 workbuddy / trae')
   assert.ok(wb < te, 'WorkBuddy 应排在 Trae 之前')
   assert.ok(tabsBlock.indexOf('CONNECT_PLUGINS') > tabsBlock.indexOf('for (const row of rows)'), '第三方积分应排在其它 AI 之后')
+})
+
+test('积分显示：浮点噪声要圆掉，整数不补 0，空值显示 —', () => {
+  assert.equal(formatPoints(5494.9100000001), '5494.91')
+  assert.equal(formatPoints(5562), '5562')
+  assert.equal(formatPoints(5562.9), '5562.9')
+  assert.equal(formatPoints(100.5), '100.5')
+  assert.equal(formatPoints(0), '0')
+  assert.equal(formatPoints(null), '—')
+  assert.equal(formatPoints(undefined), '—')
 })
