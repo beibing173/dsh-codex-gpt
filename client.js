@@ -387,6 +387,7 @@ window.__ModuleLoader__.load({
       const [notice, setNotice] = useState('')
       const [busy, setBusy] = useState(false)
       const [logging, setLogging] = useState(false)
+      const [loginUrl, setLoginUrl] = useState('')
       const [network, setNetwork] = useState(null)
       const [checking, setChecking] = useState(false)
       const pollRef = useRef(null)
@@ -437,6 +438,25 @@ window.__ModuleLoader__.load({
         setLogging(false)
       }, [])
 
+      /** 复制授权链接（浏览器拦截弹窗时的兜底；不把长 URL 铺在界面上）。 */
+      const copyLoginUrl = useCallback(async () => {
+        if (!loginUrl) return
+        try {
+          if (
+            typeof navigator !== 'undefined' &&
+            navigator.clipboard &&
+            typeof navigator.clipboard.writeText === 'function'
+          ) {
+            await navigator.clipboard.writeText(loginUrl)
+            setNotice('授权链接已复制，粘贴到浏览器地址栏打开即可。')
+            return
+          }
+          throw new Error('剪贴板不可用')
+        } catch {
+          if (typeof window !== 'undefined') window.prompt('复制这个授权链接：', loginUrl)
+        }
+      }, [loginUrl])
+
       const startLogin = useCallback(async () => {
         setError('')
         setNotice('')
@@ -445,9 +465,10 @@ window.__ModuleLoader__.load({
           const data = await postOp({ op: 'login' })
           const url = data.result && data.result.url
           if (!url) throw new Error('没有拿到 OpenAI 授权地址')
+          setLoginUrl(url)
           if (typeof window !== 'undefined') {
             const opened = window.open(url, '_blank', 'noopener')
-            if (!opened) setNotice('浏览器拦截了弹窗，请手动打开：' + url)
+            if (!opened) setNotice('浏览器拦截了弹窗：点下方「点我复制授权链接」，粘贴到浏览器打开即可。')
             else setNotice('已打开 OpenAI 登录页；完成授权后本页会自动更新。')
           }
           if (pollRef.current) clearInterval(pollRef.current)
@@ -602,6 +623,23 @@ window.__ModuleLoader__.load({
               '重新登录',
             ),
           ),
+          loginUrl
+            ? h(
+                'div',
+                { style: styles.row },
+                h(
+                  'button',
+                  {
+                    type: 'button',
+                    style: styles.button,
+                    onClick: copyLoginUrl,
+                    title: '复制完整授权链接（链接较长，桌面端窗口里放不下）',
+                  },
+                  '🔗 点我复制授权链接',
+                ),
+                h('span', { style: styles.hint }, '复制后粘贴到浏览器地址栏即可完成授权。'),
+              )
+            : null,
           network
             ? h(
                 'div',
