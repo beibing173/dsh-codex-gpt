@@ -20,10 +20,10 @@ import { getCodexUsage, __resetUsageCache } from './usage.js'
 import { checkConnectivity } from './network.js'
 import { createAuthStore, ensureAccessToken, beginLogin, cancelLogin, describeCredential } from './oauth.js'
 
-export const name = 'dsh-codex'
+export const name = 'dsh-codex-gpt'
 
-/** profile 条目 id：cordis.patch.yml 里 `- id: dsh-codex` 必须与此一致。 */
-export const ENTRY_ID = 'dsh-codex'
+/** profile 条目 id：cordis.patch.yml 里 `- id: dsh-codex-gpt` 必须与此一致。 */
+export const ENTRY_ID = 'dsh-codex-gpt'
 
 /** Host 依赖：工具注册、提示组装、状态路由（与 dsh-meme 一致）。 */
 export const inject = ['tools', 'systemPrompt', 'webServer']

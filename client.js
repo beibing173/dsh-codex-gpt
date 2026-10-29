@@ -10,7 +10,7 @@
  * 数据通道：Host 的同源 HTTP 路由 `/dsh-codex-api`（GET 读状态，POST 写操作）。
  */
 window.__ModuleLoader__.load({
-  id: 'dsh-codex',
+  id: 'dsh-codex-gpt',
   factory: (require) => {
     const React = require('react')
     const { useCallback, useEffect, useRef, useState } = React

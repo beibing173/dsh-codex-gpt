@@ -7,6 +7,6 @@
 #   - 浏览器侧入口由 package.json 的 dsh.client 声明自动装载 ./client。
 # 纯 insert(id/name) 可热挂载免重启。
 - insert:
-    - id: dsh-codex
-      name: 'dsh-codex'
+    - id: dsh-codex-gpt
+      name: 'dsh-codex-gpt'
       config: {}

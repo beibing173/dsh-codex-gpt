@@ -1,8 +1,8 @@
 {
-  "name": "dsh-codex",
-  "version": "0.1.0",
+  "name": "dsh-codex-gpt",
+  "version": "0.2.0",
   "private": true,
-  "description": "DeepSeek Harness 的 Codex 桥接插件：按会话手动授权，按任务强度自主调用 OpenAI Codex/GPT 做专业分析与构建；未授权时保持纯 DeepSeek 模式。",
+  "description": "DeepSeek Harness 的 Codex/GPT 桥接插件：OpenAI 官网 OAuth 登录，按会话授权调用 Codex，并在模型列表提供 ChatGPT 模型。",
   "type": "module",
   "main": "index.js",
   "exports": {
