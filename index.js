@@ -26,8 +26,8 @@ export const name = 'dsh-codex-gpt'
 /** profile 条目 id：cordis.patch.yml 里 `- id: dsh-codex-gpt` 必须与此一致。 */
 export const ENTRY_ID = 'dsh-codex-gpt'
 
-/** Host 依赖：工具注册、提示组装、状态路由（与 dsh-meme 一致），外加 LLM 适配器注册。 */
-export const inject = ['tools', 'systemPrompt', 'webServer', 'llm']
+/** Host 依赖：工具注册、提示组装、状态路由（与 dsh-meme 一致），外加 LLM 适配器注册与图片读取。 */
+export const inject = ['tools', 'systemPrompt', 'webServer', 'llm', 'attachments']
 
 export const ROUTE = '/dsh-codex-api'
 /** 单次 Codex 调用超时（毫秒）。 */
@@ -730,6 +730,10 @@ export function apply(ctx, config) {
             },
             fetchModels: (credential) =>
               fetchCodexModels({ accessToken: credential.accessToken, accountId: credential.accountId }),
+            readImage: async (attachmentRef) => {
+              const stored = await ctx.attachments.readImage(attachmentRef)
+              return { data: stored.data, mediaType: attachmentRef.mediaType }
+            },
           }),
         )
         llmAdapterStatus = { registered: true, error: '' }

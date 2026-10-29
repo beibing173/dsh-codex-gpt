@@ -150,6 +150,16 @@ function createHarness(initialConfig = {}) {
         handle.replace = () => {}
         return handle
       },
+      registerConfigurableProviders() {
+        const handle = () => {}
+        handle.replace = () => {}
+        return handle
+      },
+    },
+    attachments: {
+      async readImage() {
+        return { data: new Uint8Array([1, 2, 3]), ref: {} }
+      },
     },
     on() {
       return () => {}

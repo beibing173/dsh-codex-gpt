@@ -9,8 +9,8 @@ import {
   PROVIDER_ID,
 } from '../llm-adapter.js'
 
-test('buildRequestBody: 组装 Codex Responses 请求体', () => {
-  const body = buildRequestBody({
+test('buildRequestBody: 组装 Codex Responses 请求体', async () => {
+  const body = await buildRequestBody({
     model: 'gpt-5.6-sol',
     system: '你是助手',
     messages: [
@@ -32,8 +32,8 @@ test('buildRequestBody: 组装 Codex Responses 请求体', () => {
   assert.equal(body.max_output_tokens, 1000)
 })
 
-test('convertMessages: tool-call 与 tool 结果映射为 function_call 项', () => {
-  const { input } = convertMessages([
+test('convertMessages: tool-call 与 tool 结果映射为 function_call 项', async () => {
+  const { input } = await convertMessages([
     { role: 'assistant', content: [{ type: 'text', text: '我来读' }, { type: 'tool-call', id: 'call_1', name: 'read', arguments: { path: 'a.txt' } }] },
     { role: 'tool', toolCallId: 'call_1', content: [{ type: 'text', text: '文件内容' }] },
   ])
@@ -85,11 +85,23 @@ test('adapter: providerInfo / listModels / resolveModel', async () => {
   assert.deepEqual(effortIds, ['off', 'low', 'high', 'max'])
 })
 
-test('buildRequestBody: 思考档位映射到 Codex（max→xhigh，off 不传）', () => {
-  const maxBody = buildRequestBody({ model: 'gpt-5.6-sol', messages: [], reasoningEffort: 'max' })
+test('buildRequestBody: 思考档位映射到 Codex（max→xhigh，off 不传）', async () => {
+  const maxBody = await buildRequestBody({ model: 'gpt-5.6-sol', messages: [], reasoningEffort: 'max' })
   assert.deepEqual(maxBody.reasoning, { effort: 'xhigh', summary: 'auto' })
-  const offBody = buildRequestBody({ model: 'gpt-5.6-sol', messages: [], reasoningEffort: 'off' })
+  const offBody = await buildRequestBody({ model: 'gpt-5.6-sol', messages: [], reasoningEffort: 'off' })
   assert.equal(offBody.reasoning, undefined)
+})
+
+test('convertMessages: 图片块转成 input_image data URL', async () => {
+  const { input } = await convertMessages(
+    [{ role: 'user', content: [{ type: 'text', text: '看图' }, { type: 'image', attachment: { attachmentId: 'a1', mediaType: 'image/png' } }] }],
+    undefined,
+    async () => ({ data: new Uint8Array([1, 2, 3]), mediaType: 'image/png' }),
+  )
+  assert.equal(input.length, 1)
+  assert.deepEqual(input[0].content[0], { type: 'input_text', text: '看图' })
+  assert.equal(input[0].content[1].type, 'input_image')
+  assert.equal(input[0].content[1].image_url, 'data:image/png;base64,AQID')
 })
 
 test('adapter: stream 把 SSE 转成 DSH StreamChunk', async (t) => {

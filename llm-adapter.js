@@ -42,7 +42,27 @@ export function createCodexGptAdapter(opts) {
 
   const getCredential = opts.getCredential
   const fetchModels = opts.fetchModels
+  const readImage = typeof opts.readImage === 'function' ? opts.readImage : undefined
   const now = typeof opts.now === 'function' ? opts.now : Date.now
+  /** 模型目录缓存：DSH 会频繁刷新模型列表，缓存 5 分钟并容忍 429。 */
+  const MODELS_TTL_MS = 5 * 60 * 1000
+  let modelsCache = { at: 0, models: [] }
+
+  async function loadModels(credential) {
+    if (modelsCache.models.length > 0 && now() - modelsCache.at < MODELS_TTL_MS) {
+      return modelsCache.models
+    }
+    try {
+      const models = await fetchModels(credential)
+      if (Array.isArray(models) && models.length > 0) {
+        modelsCache = { at: now(), models }
+      }
+      return modelsCache.models
+    } catch {
+      // 限流/网络错误时退回旧缓存，绝不把 429 抛成 UI 红字。
+      return modelsCache.models
+    }
+  }
 
   function providerInfo() {
     return { id: PROVIDER_ID, name: PROVIDER_NAME }
@@ -52,13 +72,13 @@ export function createCodexGptAdapter(opts) {
     assertProvider(provider)
     const credential = await getCredential()
     if (!credential?.accessToken) return []
-    const models = await fetchModels(credential)
+    const models = await loadModels(credential)
     // LlmModelInfo 只允许 provider/id/name/description/inputModalities。
     return normalizeModels(models).map((model) => ({
       provider: PROVIDER_ID,
       id: model.slug,
       name: model.displayName || model.slug,
-      inputModalities: ['text'],
+      inputModalities: ['text', 'image'],
     }))
   }
 
@@ -90,7 +110,7 @@ export function createCodexGptAdapter(opts) {
       context: { contextWindow: found?.contextWindow || DEFAULT_CONTEXT_WINDOW },
       defaultMaxTokens: DEFAULT_MAX_TOKENS,
       reasoning: { efforts: REASONING_EFFORTS.map((effort) => ({ ...effort })), defaultEffort: DEFAULT_REASONING_EFFORT },
-      inputModalities: ['text'],
+      inputModalities: ['text', 'image'],
     }
   }
 
@@ -507,7 +527,7 @@ export function createCodexGptAdapter(opts) {
     return sendRequest(options, credential, signal)
   }
 
-  function sendRequest(options, credential, signal) {
+  async function sendRequest(options, credential, signal) {
     const headers = {
       Authorization: `Bearer ${credential.accessToken}`,
       originator: 'codex_cli_rs',
@@ -518,7 +538,7 @@ export function createCodexGptAdapter(opts) {
     return fetch(RESPONSES_URL, {
       method: 'POST',
       headers,
-      body: JSON.stringify(buildRequestBody(options)),
+      body: JSON.stringify(await buildRequestBody(options, readImage)),
       signal,
     })
   }
@@ -540,9 +560,9 @@ export function createCodexGptAdapter(opts) {
   }
 }
 
-/** 组装 Codex Responses 请求体。 */
-export function buildRequestBody(options) {
-  const { instructions, input } = convertMessages(options?.messages, options?.system)
+/** 组装 Codex Responses 请求体（异步：需要读取图片附件）。 */
+export async function buildRequestBody(options, readImage) {
+  const { instructions, input } = await convertMessages(options?.messages, options?.system, readImage)
   const model = typeof options?.model === 'string' ? options.model : options?.model?.id
   if (!model) throw createCodedError('未指定 Codex 模型', 'MISSING_MODEL')
 
@@ -569,8 +589,8 @@ export function buildRequestBody(options) {
   return body
 }
 
-/** 把 DSH 消息转换成 Responses input + instructions。 */
-export function convertMessages(messages, explicitSystem) {
+/** 把 DSH 消息转换成 Responses input + instructions（图片需 readImage 读取附件字节）。 */
+export async function convertMessages(messages, explicitSystem, readImage) {
   const instructionParts = []
   appendInstruction(instructionParts, explicitSystem)
   const input = []
@@ -584,8 +604,27 @@ export function convertMessages(messages, explicitSystem) {
     }
 
     if (message.role === 'user') {
-      const text = extractText(message.content)
-      if (text) input.push({ role: 'user', content: [{ type: 'input_text', text }] })
+      const parts = []
+      for (const block of normalizeContent(message.content)) {
+        if (block?.type === 'text' && typeof block.text === 'string' && block.text) {
+          parts.push({ type: 'input_text', text: block.text })
+          continue
+        }
+        if (block?.type === 'image' && block.attachment && readImage) {
+          try {
+            const image = await readImage(block.attachment)
+            if (image?.data && image?.mediaType) {
+              parts.push({
+                type: 'input_image',
+                image_url: `data:${image.mediaType};base64,${Buffer.from(image.data).toString('base64')}`,
+              })
+            }
+          } catch {
+            // 读图失败时跳过该图，不让整条请求失败。
+          }
+        }
+      }
+      if (parts.length > 0) input.push({ role: 'user', content: parts })
       continue
     }
 
