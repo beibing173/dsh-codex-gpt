@@ -107,7 +107,7 @@ test('用量卡能真实渲染（空数据、中文、宽卡片）', () => {
   assert.ok(node.children.length >= 2, '卡片应有头部与主体')
 })
 
-test('用量卡能渲染英文（lang=en 时走英文词典）', () => {
+test('用量卡在有 locale 对象时也能渲染（不依赖 locale）', () => {
   const { runtime, slots } = loadSlots()
   const wrapper = slots.sidebar.Component({ wide: true })
   const Card = wrapper.children[0].type
@@ -120,7 +120,7 @@ test('用量卡能渲染英文（lang=en 时走英文词典）', () => {
   const node = Card({ wide: true, locale })
   assert.equal(node.type, 'div')
   const text = JSON.stringify(node)
-  assert.ok(text.includes('No usage data') || text.includes('No balance data'), '英文环境下应出现英文文案')
+  assert.ok(text.includes('暂无用量数据') || text.includes('暂无余额数据'), '应显示中文文案')
 })
 
 test('用量卡在非宽（折叠）布局下不渲染，但不抛错', () => {
@@ -141,7 +141,7 @@ test('设置页能真实渲染（未登录时的加载分支）', () => {
   assert.equal(node.type, 'div')
 })
 
-test('设置页在英文环境下渲染英文文案', () => {
+test('设置页在带 locale 对象时也能渲染', () => {
   const { runtime, slots } = loadSlots()
   const locale = {
     active: 'en',
@@ -152,7 +152,7 @@ test('设置页在英文环境下渲染英文文案', () => {
   runtime.resetCursor()
   const node = wrapper.type(wrapper.props)
   const text = JSON.stringify(node)
-  assert.ok(text.includes('Loading…'), '英文环境下设置页应显示 Loading…')
+  assert.ok(text.includes('加载中…'), '设置页应显示中文')
 })
 
 test('设置页每个可见文案都经过 L()/t()（防止以后新加中文漏翻）', () => {

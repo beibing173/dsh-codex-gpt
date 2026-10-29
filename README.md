@@ -123,7 +123,7 @@ DSH 中通过 **插件管理** 以本地 bundle 方式安装：
 | `network.js` | 外网连通性检查 |
 | `client.js` | 浏览器侧：输入框授权胶囊、侧边栏用量卡片、设置页 |
 | `cordis.patch.yml` | 插入主机行 `id: dsh-codex-gpt` |
-| `test/` | `node --test` 单测（107 条，含安全回归、卡片真实渲染、客户端冒烟与 i18n 校验） |
+| `test/` | `node --test` 单测（107 条，含安全回归、卡片真实渲染与客户端冒烟） |
 
 数据流（方式 A）：
 
@@ -164,7 +164,6 @@ node --test "test/codex.test.mjs" "test/usage.test.mjs" "test/host.test.mjs" "te
 - 未登录 / 未授权时不会发起任何 OpenAI 请求；
 - 状态路由只接受 `GET` / `POST`，其余方法一律 `405`（不能靠 `PUT/PATCH/DELETE` 绕过写令牌）；
 - 侧边栏「跟随当前模型」轮询走轻量端点 `?meta=1`（只回当前 provider/model 与默认 tab，不含邮箱、套餐、用量、写令牌，也不触发凭证写入）；
-- 用量卡与**整个设置页**跟随 DSH 界面语言（中/英）：语言由**宿主直接读 DSH 配置**（`profiles/*/cordis.patch.yml` 的 `locale.config.preference`）后下发，客户端 `locale` 服务与 `<html lang>` 仅作兜底：语言来源依次是 `locale` 服务快照 → `<html lang>`（DSH 会把当前语言写在这里）→ 中文兜底，切换语言后卡片立即更新（2 秒内）；
 - 卡片外面包了一层兜底组件，单个组件渲染出错只会显示一行提示，不会让整块卡片消失；
 - 设置页顶部显示**当前插件版本号**（直接读 `package.json`，避免两处版本号写歪）；
 - `credentials` 写入做了三件事：串行化（避免并发写触发多次模型目录刷新）、写前比较现值（值没变就不写）、登出时连同镜像 token 一起 `unset`；

@@ -208,7 +208,7 @@ window.__ModuleLoader__.load({
     function CodexToggle(props) {
       const slotProps = props || {}
       const lang = useLang(slotProps.locale)
-      /** 就地双语：中文 / 英文（英文缺译时回退中文）。 */
+      /** 文案选择：第一个参数为当前展示文案。 */
       const L = (zh, en) => (lang === 'en' ? en : zh)
       // slots 可能把 register({inject}) 的返回值直接铺成 props，也可能挂在 props.inject 下，
       // 两种都要认，否则「当前模型」永远读不到、胶囊就固定显示同一个名字。
@@ -563,8 +563,8 @@ window.__ModuleLoader__.load({
       return 'zh'
     }
 
-    /** 订阅语言变化：locale 服务能订阅就订阅，另外每 2 秒对一次 <html lang>（只在变了才重渲染）。 */
-    function useLang(locale) {
+    /** 语言探测与订阅（实现保留，当前未被引用）。 */
+    function useDetectedLang(locale) {
       const [lang, setLang] = useState(() => detectLang(locale))
       useEffect(() => {
         let alive = true
@@ -597,6 +597,11 @@ window.__ModuleLoader__.load({
       return lang
     }
 
+    /** 组件统一入口：当前固定中文。 */
+    function useLang() {
+      return 'zh'
+    }
+
     /** 取文案；缺键回退中文，再缺返回 key（永不渲染 undefined）。 */
     function translate(lang, key, ...args) {
       const dict = I18N[lang] || I18N.zh
@@ -605,7 +610,7 @@ window.__ModuleLoader__.load({
       return typeof value === 'string' ? value : key
     }
 
-    /** 宿主/第三方插件返回的中文提示：英文界面下做一层映射（认不出就原样显示）。 */
+    /** 宿主/第三方插件返回的中文提示：原样透传（映射实现保留，当前未启用）。 */
     const HOST_TEXT_EN = {
       '未配置 DEEPSEEK_API_KEY': 'DEEPSEEK_API_KEY is not configured',
       '尚未登录 OpenAI 账号': 'Not signed in to OpenAI',
@@ -652,9 +657,9 @@ window.__ModuleLoader__.load({
       const detectedLang = useLang(locale)
       const lang = hostLang === 'en' || hostLang === 'zh' ? hostLang : detectedLang
       const t = (key, ...args) => translate(lang, key, ...args)
-      /** 就地双语：中文 / 英文（英文缺译时回退中文）。 */
+      /** 文案选择：第一个参数为当前展示文案。 */
       const L = (zh, en) => (lang === 'en' ? en : zh)
-      /** 宿主返回的窗口标签是中文（5 小时 / 每周），英文界面下按 id 映射过去。 */
+      /** 宿主返回的窗口标签是中文（5 小时 / 每周）；映射实现保留，当前原样使用。 */
       const chatgptWindowLabel = (window) => {
         const id = String((window && window.id) || '')
         const raw = String((window && window.label) || '')
@@ -991,7 +996,7 @@ window.__ModuleLoader__.load({
             ...windows.map((window) => {
               const used = Math.max(0, Math.min(100, Number(window.usedPercent) || 0))
               const left = Math.round(100 - used)
-              // 宿主的窗口标签是中文（5 小时 / 每周），英文界面下按 id 映射过去。
+              // 宿主的窗口标签是中文（5 小时 / 每周）。
               const label = chatgptWindowLabel(window)
               const resetHint = window.resetAt
                 ? L(`, ${formatReset(window.resetAt)} 重置`, `, resets ${formatReset(window.resetAt)}`)
@@ -1087,7 +1092,7 @@ window.__ModuleLoader__.load({
       const detectedLang = useLang(locale)
       const lang = hostLang === 'en' || hostLang === 'zh' ? hostLang : detectedLang
       const t = (key, ...args) => translate(lang, key, ...args)
-      /** 就地双语：中文 / 英文（英文缺译时回退中文）。 */
+      /** 文案选择：第一个参数为当前展示文案。 */
       const L = (zh, en) => (lang === 'en' ? en : zh)
       const [auth, setAuth] = useState(null)
       const [defaultModel, setDefaultModel] = useState('')
@@ -1768,9 +1773,7 @@ window.__ModuleLoader__.load({
 
     return {
       name: 'codex-client',
-      // locale 必须显式 inject：不声明时 ctx.locale 是 undefined，只能靠 <html lang> 兜底，
-      // 界面切英文后卡片/设置页会继续中文（这就是之前「英文没加上去」的真正原因）。
-      inject: ['slots', 'locale'],
+      inject: ['slots'],
       // 仅供测试：验证词典内容与语言探测（不影响运行时）。
       __test: { I18N, translate, detectLang, normalizeLang },
       apply(ctx) {
