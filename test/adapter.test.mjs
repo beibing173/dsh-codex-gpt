@@ -145,3 +145,57 @@ test('adapter: stream 把 SSE 转成 DSH StreamChunk', async (t) => {
     .join('')
   assert.equal(text, '你好')
 })
+
+test('listModels: 凭证/目录不可用时返回兜底模型，绝不返回空列表', async () => {
+  const cases = [
+    {
+      name: '凭证刷新抛错',
+      getCredential: async () => {
+        throw new Error('refresh failed')
+      },
+      fetchModels: async () => [{ slug: 'gpt-9-sol' }],
+    },
+    {
+      name: '未登录',
+      getCredential: async () => undefined,
+      fetchModels: async () => [{ slug: 'gpt-9-sol' }],
+    },
+    {
+      name: '上游 429',
+      getCredential: async () => ({ accessToken: 'at' }),
+      fetchModels: async () => {
+        throw new Error('HTTP 429')
+      },
+    },
+    {
+      name: '上游空列表',
+      getCredential: async () => ({ accessToken: 'at' }),
+      fetchModels: async () => [],
+    },
+  ]
+
+  for (const item of cases) {
+    const adapter = createCodexGptAdapter({
+      getCredential: item.getCredential,
+      fetchModels: item.fetchModels,
+      fallbackModel: 'gpt-5.6-sol',
+    })
+    const models = await adapter.listModels(PROVIDER_ID)
+    assert.equal(models.length, 1, `${item.name}: 必须返回兜底模型`)
+    assert.equal(models[0].provider, PROVIDER_ID)
+    assert.equal(models[0].id, 'gpt-5.6-sol')
+    assert.deepEqual(models[0].inputModalities, ['text', 'image'])
+  }
+
+  // 有正常目录时不塞兜底，直接用上游结果。
+  const adapter = createCodexGptAdapter({
+    getCredential: async () => ({ accessToken: 'at' }),
+    fetchModels: async () => [{ slug: 'gpt-9-sol', displayName: 'GPT-9' }],
+    fallbackModel: 'gpt-5.6-sol',
+  })
+  const live = await adapter.listModels(PROVIDER_ID)
+  assert.deepEqual(
+    live.map((model) => model.id),
+    ['gpt-9-sol'],
+  )
+})

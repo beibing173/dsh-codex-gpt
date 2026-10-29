@@ -1032,6 +1032,9 @@ export function apply(ctx, config) {
             },
             fetchModels: (credential) =>
               fetchCodexModels({ accessToken: credential.accessToken, accountId: credential.accountId }),
+            // 上游目录拿不到时（未登录/429/凭证刷新失败）至少保留一个可路由模型，
+            // 避免 DSH 模型选择器变空导致当前会话“点发送没反应”。
+            fallbackModel: configuredModel() || DEFAULT_MODEL,
             readImage: async (attachmentRef) => {
               const stored = await ctx.attachments.readImage(attachmentRef)
               // 以读取结果为准：ref 上不一定带 mediaType，否则会拼出 data:undefined;base64 并被静默丢图。

@@ -31,6 +31,7 @@ const DEFAULT_MAX_TOKENS = 64000
  * @param {{
  *   getCredential: () => Promise<{accessToken: string, accountId?: string} | undefined>,
  *   fetchModels: (credential: {accessToken: string, accountId?: string}) => Promise<Array<{slug: string, displayName?: string, contextWindow?: number}>>,
+ *   fallbackModel?: string,
  *   now?: () => number
  * }} opts
  */
@@ -45,6 +46,8 @@ export function createCodexGptAdapter(opts) {
   const getCredential = opts.getCredential
   const fetchModels = opts.fetchModels
   const readImage = typeof opts.readImage === 'function' ? opts.readImage : undefined
+  /** 目录拿不到时的兜底模型：保证 provider 永远至少有一个可路由模型。 */
+  const fallbackModel = typeof opts.fallbackModel === 'string' && opts.fallbackModel ? opts.fallbackModel : ''
   const now = typeof opts.now === 'function' ? opts.now : Date.now
   /** 模型目录缓存：DSH 会频繁刷新模型列表，缓存 5 分钟并容忍 429。 */
   const MODELS_TTL_MS = 5 * 60 * 1000
@@ -72,16 +75,43 @@ export function createCodexGptAdapter(opts) {
 
   async function listModels(provider) {
     assertProvider(provider)
-    const credential = await getCredential()
-    if (!credential?.accessToken) return []
-    const models = await loadModels(credential)
+    let credential
+    // 目录查询本身绝不能让 DSH 报错：凭证刷新失败/上游 429 时退化为兜底列表，
+    // 否则模型选择器会直接变空，当前会话选中的模型不可路由 → 点发送没反应。
+    try {
+      credential = await getCredential()
+    } catch {
+      credential = undefined
+    }
+    let models = []
+    if (credential?.accessToken) {
+      try {
+        models = normalizeModels(await loadModels(credential))
+      } catch {
+        models = []
+      }
+    }
+    if (models.length === 0) {
+      models = fallbackModels()
+    }
     // LlmModelInfo 只允许 provider/id/name/description/inputModalities。
-    return normalizeModels(models).map((model) => ({
+    return models.map((model) => ({
       provider: PROVIDER_ID,
       id: model.slug,
       name: model.displayName || model.slug,
       inputModalities: ['text', 'image'],
     }))
+  }
+
+  /** 上游目录不可用时的兜底清单（至少一个，保证 provider 可路由）。 */
+  function fallbackModels() {
+    const list = []
+    if (fallbackModel) {
+      list.push({ slug: fallbackModel, displayName: fallbackModel, contextWindow: DEFAULT_CONTEXT_WINDOW })
+    } else {
+      list.push({ slug: AUTO_MODEL_ID, displayName: '自动选择', contextWindow: DEFAULT_CONTEXT_WINDOW })
+    }
+    return list
   }
 
   async function resolveModel(provider, model, signal) {
