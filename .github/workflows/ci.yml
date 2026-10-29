@@ -1,0 +1,45 @@
+name: CI
+
+# 触发：推 master、任何 PR、手动、以及被 release.yml 复用调用。
+# 注意本仓库默认分支是 master，不是 main。
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      # 本仓库不提交 lockfile，因此不能冻结安装；唯一运行时依赖是 @deepseek-ai/schemastery。
+      - name: Install dependencies
+        run: npm install --no-package-lock --no-audit --no-fund
+
+      - name: Run tests
+        run: npm test
+
+      # 发布完整性闸门。
+      # 本插件不做构建，发布包就是源码本身，package.json 的 files 白名单是唯一防线。
+      # npm pack 不检查导入图：index.js 引用了 ./deepseek.js，而这个文件曾经不在
+      # files 列表里——打包照样成功，装到用户机器上才 ERR_MODULE_NOT_FOUND。
+      - name: Verify published package is importable
+        run: npm run verify:pack

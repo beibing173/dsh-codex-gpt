@@ -1,0 +1,93 @@
+name: Release
+
+# 打 tag 即发布。GitHub 会为每个 Release 自动附上 Source code (zip) 与 Source code (tar.gz)，
+# 因此这里**不构建、不打包、不上传任何附件**——本插件经源码分发，Release 的作用是
+# 「给 tag 一份可读的说明 + 一个稳定的源码下载入口」。
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 要发布已存在的 tag（如 v0.9.1）
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  # 发布前先跑完整 CI，绿灯才允许出 Release。
+  # 复用 ci.yml 的 workflow_call，避免两处矩阵各写一遍、日后漂移。
+  ci:
+    uses: ./.github/workflows/ci.yml
+
+  release:
+    name: create GitHub release
+    needs: ci
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - name: Resolve release tag
+        id: vars
+        run: |
+          TAG="${{ inputs.tag || github.ref_name }}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+
+      # tag 与 package.json 版本必须一致，否则用户看到 v0.9.2 的 Release
+      # 却装到 0.9.1 的代码——这类偏差不会有任何东西自动报错。
+      - name: Assert tag matches package.json version
+        run: |
+          PKG=$(node -p "require('./package.json').version")
+          TAG_VERSION="${{ steps.vars.outputs.version }}"
+          echo "package.json: $PKG / tag: $TAG_VERSION"
+          if [ "$PKG" != "$TAG_VERSION" ]; then
+            echo "::error::tag ${{ steps.vars.outputs.tag }} 与 package.json 版本 $PKG 不一致"
+            exit 1
+          fi
+
+      - name: Assert tag points at a real commit
+        run: |
+          git rev-parse --verify "refs/tags/${{ steps.vars.outputs.tag }}" >/dev/null
+          git rev-list -n1 "${{ steps.vars.outputs.tag }}"
+
+      # --verify-tag：tag 必须已存在。少了它，gh 会在 tag 不存在时
+      # 悄悄新建一个指向当前 HEAD 的 tag，那可能不是要发布的那次提交。
+      # 不传 --notes-file 也不用 --generate-notes 时正文为空，这里用 CHANGELOG
+      # 的对应小节（若存在）否则退回自动生成的提交列表。
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ steps.vars.outputs.tag }}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "::warning::Release $TAG 已存在，跳过创建（重复打 tag / 重跑工作流）"
+            exit 0
+          fi
+          NOTES_ARGS="--generate-notes"
+          if [ -f CHANGELOG.md ] && grep -q "^## ${TAG#v}" CHANGELOG.md; then
+            awk -v ver="${TAG#v}" '
+              index($0, "## " ver) == 1 { capture = 1; next }
+              capture && /^## / { exit }
+              capture { print }
+            ' CHANGELOG.md > /tmp/notes.md
+            NOTES_ARGS="--notes-file /tmp/notes.md"
+            echo "--- release notes from CHANGELOG.md ---"
+            cat /tmp/notes.md
+          fi
+          gh release create "$TAG" \
+            --title "$TAG" \
+            $NOTES_ARGS \
+            --verify-tag
+          gh release view "$TAG" --json name,tagName,isDraft,isPrerelease,assets
