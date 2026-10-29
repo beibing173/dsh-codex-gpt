@@ -15,8 +15,8 @@ import z from '@deepseek-ai/schemastery'
 import { readFileSync, writeFileSync, mkdirSync, renameSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { homedir } from 'node:os'
-import { callCodexBackend, fetchCodexModels } from './codex.js'
-import { getCodexUsage } from './usage.js'
+import { callCodexBackend, fetchCodexModels, fetchResetCredits, consumeResetCredit } from './codex.js'
+import { getCodexUsage, __resetUsageCache } from './usage.js'
 import { checkConnectivity } from './network.js'
 import { createAuthStore, ensureAccessToken, beginLogin, cancelLogin, describeCredential } from './oauth.js'
 
@@ -587,6 +587,39 @@ export function apply(ctx, config) {
       if (error && models.length === 0) throw new Error(error)
       return { latencyMs: Date.now() - startedAt, count: models.length }
     }
+    if (op === 'resetCredits') {
+      const credential = await ensureAccessToken(authStore)
+      if (!credential) throw new Error('尚未登录 OpenAI 账号')
+      return await fetchResetCredits({
+        accessToken: credential.accessToken,
+        accountId: credential.accountId,
+      })
+    }
+    if (op === 'consumeReset') {
+      const credential = await ensureAccessToken(authStore)
+      if (!credential) throw new Error('尚未登录 OpenAI 账号')
+      // 未指定 creditId 时先取最早过期的一张；列表不可用时交给服务端自选。
+      let creditId = typeof body.creditId === 'string' && body.creditId.trim() ? body.creditId.trim() : ''
+      if (!creditId) {
+        try {
+          const list = await fetchResetCredits({
+            accessToken: credential.accessToken,
+            accountId: credential.accountId,
+          })
+          creditId = list.credits[0]?.id || ''
+        } catch {
+          creditId = ''
+        }
+      }
+      const result = await consumeResetCredit({
+        accessToken: credential.accessToken,
+        accountId: credential.accountId,
+        creditId,
+      })
+      // 兑换后旧用量缓存必须失效，否则卡片还要等 60 秒才更新。
+      __resetUsageCache()
+      return result
+    }
     if (op === 'testNetwork') {
       return await checkConnectivity({ timeoutMs: 8_000 })
     }
@@ -628,6 +661,19 @@ export function apply(ctx, config) {
           }
           const { models, error } = await getModels(credential, false)
           sendJson(res, 200, { ok: true, models, error })
+          return
+        }
+        if (url.searchParams.get('resets') === '1') {
+          const credential = await ensureAccessToken(authStore)
+          if (!credential) {
+            sendJson(res, 200, { ok: true, result: { availableCount: 0, credits: [] }, error: '尚未登录 OpenAI 账号' })
+            return
+          }
+          const credits = await fetchResetCredits({
+            accessToken: credential.accessToken,
+            accountId: credential.accountId,
+          })
+          sendJson(res, 200, { ok: true, result: credits })
           return
         }
         const sessionId = normalizeSessionId(url.searchParams.get('sessionId') || '')

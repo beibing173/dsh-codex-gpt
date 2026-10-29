@@ -144,3 +144,74 @@ test('指令文本包含关键约束', () => {
   assert.match(ANALYZE_INSTRUCTIONS, /分析/)
   assert.match(BUILD_INSTRUCTIONS, /代码/)
 })
+
+test('fetchResetCredits: 只保留 available、按过期时间排序', async (t) => {
+  const original = globalThis.fetch
+  t.after(() => {
+    globalThis.fetch = original
+  })
+  let url = ''
+  globalThis.fetch = async (target) => {
+    url = String(target)
+    return {
+      ok: true,
+      status: 200,
+      text: async () =>
+        JSON.stringify({
+          available_count: 3,
+          credits: [
+            { id: 'c-late', status: 'available', title: 'Full reset', expires_at: '2026-12-01T00:00:00Z' },
+            { id: 'c-expired', status: 'redeemed', title: 'old', expires_at: '2026-01-01T00:00:00Z' },
+            { id: 'c-soon', status: 'available', description: 'Ready', expires_at: '2026-11-01T00:00:00Z' },
+          ],
+        }),
+    }
+  }
+  const { fetchResetCredits } = await import('../codex.js')
+  const result = await fetchResetCredits({ accessToken: 'at', accountId: 'acc' })
+  assert.equal(url, 'https://chatgpt.com/backend-api/wham/rate-limit-reset-credits')
+  assert.equal(result.availableCount, 3)
+  assert.deepEqual(
+    result.credits.map((credit) => credit.id),
+    ['c-soon', 'c-late'],
+  )
+  assert.equal(result.credits[0].title, 'Ready')
+})
+
+test('consumeResetCredit: 带幂等键与 credit_id 兑换', async (t) => {
+  const original = globalThis.fetch
+  t.after(() => {
+    globalThis.fetch = original
+  })
+  let captured
+  globalThis.fetch = async (target, init) => {
+    captured = { url: String(target), init }
+    return {
+      ok: true,
+      status: 200,
+      text: async () =>
+        JSON.stringify({ code: 'reset', windows_reset: 2, credit: { id: 'c-1', status: 'redeemed' } }),
+    }
+  }
+  const { consumeResetCredit } = await import('../codex.js')
+  const result = await consumeResetCredit({ accessToken: 'at', accountId: 'acc', creditId: 'c-1' })
+  assert.equal(captured.url, 'https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume')
+  const body = JSON.parse(captured.init.body)
+  assert.equal(body.credit_id, 'c-1')
+  assert.match(body.redeem_request_id, /^[0-9a-f-]{36}$/)
+  assert.equal(captured.init.headers['chatgpt-account-id'], 'acc')
+  assert.equal(result.code, 'reset')
+  assert.equal(result.windowsReset, 2)
+})
+
+test('consumeResetCredit: nothing_to_reset 等结果码原样返回', async (t) => {
+  const original = globalThis.fetch
+  t.after(() => {
+    globalThis.fetch = original
+  })
+  globalThis.fetch = async () => ({ ok: true, status: 200, text: async () => JSON.stringify({ code: 'nothing_to_reset' }) })
+  const { consumeResetCredit } = await import('../codex.js')
+  const result = await consumeResetCredit({ accessToken: 'at', accountId: 'acc' })
+  assert.equal(result.code, 'nothing_to_reset')
+  assert.equal(result.windowsReset, 0)
+})

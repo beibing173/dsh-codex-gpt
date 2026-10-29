@@ -8,7 +8,10 @@
  *
  * 额度走 ChatGPT 订阅（侧边栏卡片的 5 小时 / 每周限额），不产生 API 计费。
  */
+import { randomUUID } from 'node:crypto'
+
 const BACKEND = 'https://chatgpt.com/backend-api/codex'
+const WHAM_BASE = 'https://chatgpt.com/backend-api/wham'
 const ORIGINATOR = 'codex_cli_rs'
 const MODELS_TIMEOUT_MS = 15_000
 
@@ -246,4 +249,102 @@ export async function fetchCodexModels(options) {
     })
   }
   return models
+}
+
+/** WHAM 接口的通用鉴权头。 */
+function whamHeaders(accessToken, accountId) {
+  const headers = {
+    Authorization: `Bearer ${accessToken}`,
+    originator: ORIGINATOR,
+    Accept: 'application/json',
+  }
+  if (typeof accountId === 'string' && accountId) headers['chatgpt-account-id'] = accountId
+  return headers
+}
+
+/**
+ * 读取「重置卡」（banked rate-limit reset）明细。
+ * 只有 status === 'available' 的条目可被兑换；available_count 是权威数量
+ * （后端可能限制返回条数，所以两者都可能存在差异）。
+ * @param {{ accessToken: string, accountId?: string, signal?: AbortSignal }} options
+ * @returns {Promise<{ availableCount: number, credits: Array<{ id: string, title: string, expiresAt: string | null }> }>}
+ */
+export async function fetchResetCredits(options) {
+  const { accessToken, accountId, signal } = options
+  const timeout = AbortSignal.timeout(MODELS_TIMEOUT_MS)
+  const composed =
+    signal && typeof AbortSignal.any === 'function' ? AbortSignal.any([signal, timeout]) : timeout
+  const response = await fetch(`${WHAM_BASE}/rate-limit-reset-credits`, {
+    method: 'GET',
+    headers: whamHeaders(accessToken, accountId),
+    signal: composed,
+  })
+  const raw = await response.text()
+  if (!response.ok) {
+    const error = new Error(`重置卡列表 HTTP ${response.status}: ${raw.slice(0, 300) || response.statusText}`)
+    error.status = response.status
+    throw error
+  }
+  let json
+  try {
+    json = JSON.parse(raw)
+  } catch {
+    throw new Error('重置卡列表返回了无法解析的 JSON')
+  }
+  const entries = Array.isArray(json && json.credits) ? json.credits : []
+  const credits = entries
+    .filter((entry) => entry && typeof entry === 'object' && entry.status === 'available' && entry.id)
+    .map((entry) => ({
+      id: String(entry.id),
+      title:
+        (typeof entry.title === 'string' && entry.title.trim()) ||
+        (typeof entry.description === 'string' && entry.description.trim()) ||
+        'Codex 限流重置',
+      expiresAt: typeof entry.expires_at === 'string' ? entry.expires_at : null,
+    }))
+    // 最早过期的排前面，兑换时优先用掉快过期的。
+    .sort((a, b) => String(a.expiresAt || '9999').localeCompare(String(b.expiresAt || '9999')))
+  const availableCount = Number(json && json.available_count)
+  return {
+    availableCount: Number.isFinite(availableCount) && availableCount >= 0 ? Math.round(availableCount) : credits.length,
+    credits,
+  }
+}
+
+/**
+ * 兑换一张重置卡（不可撤销）。
+ * @param {{ accessToken: string, accountId?: string, creditId?: string, signal?: AbortSignal }} options
+ * @returns {Promise<{ code: string, windowsReset: number, creditId?: string }>}
+ *   code: reset | nothing_to_reset | no_credit | already_redeemed
+ */
+export async function consumeResetCredit(options) {
+  const { accessToken, accountId, creditId, signal } = options
+  const body = { redeem_request_id: randomUUID() }
+  if (typeof creditId === 'string' && creditId) body.credit_id = creditId
+  const timeout = AbortSignal.timeout(30_000)
+  const composed =
+    signal && typeof AbortSignal.any === 'function' ? AbortSignal.any([signal, timeout]) : timeout
+  const response = await fetch(`${WHAM_BASE}/rate-limit-reset-credits/consume`, {
+    method: 'POST',
+    headers: { ...whamHeaders(accessToken, accountId), 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+    signal: composed,
+  })
+  const raw = await response.text()
+  if (!response.ok) {
+    const error = new Error(`兑换重置卡 HTTP ${response.status}: ${raw.slice(0, 300) || response.statusText}`)
+    error.status = response.status
+    throw error
+  }
+  let json
+  try {
+    json = JSON.parse(raw)
+  } catch {
+    throw new Error('兑换重置卡返回了无法解析的 JSON')
+  }
+  return {
+    code: typeof json.code === 'string' ? json.code : 'unknown',
+    windowsReset: Number.isFinite(Number(json.windows_reset)) ? Math.round(Number(json.windows_reset)) : 0,
+    creditId: json.credit && typeof json.credit.id === 'string' ? json.credit.id : undefined,
+  }
 }

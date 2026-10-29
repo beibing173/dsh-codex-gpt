@@ -428,6 +428,77 @@ test('外网连通性检查：3 条链路并行探测', async (t) => {
   assert.equal(json.result.reachable, 2)
 })
 
+test('重置卡：GET ?resets=1 返回可用张数与明细', async (t) => {
+  const original = globalThis.fetch
+  t.after(() => {
+    globalThis.fetch = original
+  })
+  globalThis.fetch = async (url) => {
+    const target = String(url)
+    assert.match(target, /rate-limit-reset-credits/)
+    return {
+      ok: true,
+      status: 200,
+      text: async () =>
+        JSON.stringify({
+          available_count: 2,
+          credits: [
+            { id: 'c-1', status: 'available', title: 'Full reset (Weekly + 5 hr)', expires_at: '2026-11-03T00:00:00Z' },
+          ],
+        }),
+    }
+  }
+  writeAuth()
+  const harness = createHarness()
+  const { status, json } = await callApi(harness, { url: '/dsh-codex-api?resets=1' })
+  assert.equal(status, 200)
+  assert.equal(json.result.availableCount, 2)
+  assert.equal(json.result.credits.length, 1)
+  assert.equal(json.result.credits[0].id, 'c-1')
+})
+
+test('重置卡：consumeReset 先取最早一张再兑换', async (t) => {
+  const original = globalThis.fetch
+  t.after(() => {
+    globalThis.fetch = original
+  })
+  const calls = []
+  globalThis.fetch = async (url, init) => {
+    const target = String(url)
+    calls.push({ target, init })
+    if (target.endsWith('/rate-limit-reset-credits')) {
+      return {
+        ok: true,
+        status: 200,
+        text: async () =>
+          JSON.stringify({
+            available_count: 2,
+            credits: [
+              { id: 'c-late', status: 'available', expires_at: '2026-12-01T00:00:00Z' },
+              { id: 'c-soon', status: 'available', expires_at: '2026-11-01T00:00:00Z' },
+            ],
+          }),
+      }
+    }
+    return {
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ code: 'reset', windows_reset: 2, credit: { id: 'c-soon' } }),
+    }
+  }
+  writeAuth()
+  const harness = createHarness()
+  const { status, json } = await callApi(harness, { method: 'POST', body: { op: 'consumeReset' } })
+  assert.equal(status, 200)
+  assert.equal(json.result.code, 'reset')
+  assert.equal(json.result.windowsReset, 2)
+  const consumeCall = calls.find((call) => call.target.endsWith('/consume'))
+  assert.ok(consumeCall, '没有发兑换请求')
+  const body = JSON.parse(consumeCall.init.body)
+  assert.equal(body.credit_id, 'c-soon')
+  assert.match(body.redeem_request_id, /^[0-9a-f-]{36}$/)
+})
+
 test('提示段按登录/授权状态切换文案', async () => {
   const harness = createHarness()
   const section = harness.sections[0]

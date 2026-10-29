@@ -406,6 +406,8 @@ window.__ModuleLoader__.load({
       const [loginUrl, setLoginUrl] = useState('')
       const [network, setNetwork] = useState(null)
       const [checking, setChecking] = useState(false)
+      const [resetInfo, setResetInfo] = useState(null)
+      const [resetting, setResetting] = useState(false)
       const pollRef = useRef(null)
       const initialized = useRef(false)
 
@@ -420,6 +422,18 @@ window.__ModuleLoader__.load({
         }
       }, [])
 
+      const loadResets = useCallback(async () => {
+        try {
+          const data = await request(API + '?resets=1', {
+            headers: { Accept: 'application/json' },
+            cache: 'no-store',
+          })
+          setResetInfo(data.result || null)
+        } catch {
+          setResetInfo(null)
+        }
+      }, [])
+
       const loadAll = useCallback(async () => {
         try {
           const data = await loadState('')
@@ -430,11 +444,14 @@ window.__ModuleLoader__.load({
             setAutoConsult(data.global.autoConsult !== false)
             setAllowLan(data.global.allowLanAccess === true)
           }
-          if (data.auth && data.auth.loggedIn) await loadModels(false)
+          if (data.auth && data.auth.loggedIn) {
+            await loadModels(false)
+            await loadResets()
+          }
         } catch (loadFailure) {
           setError(String(loadFailure.message || loadFailure))
         }
-      }, [loadModels])
+      }, [loadModels, loadResets])
 
       useEffect(() => {
         void loadAll()
@@ -498,6 +515,7 @@ window.__ModuleLoader__.load({
                 setAuth(status.auth)
                 setNotice('登录成功，已获取模型列表。')
                 await loadModels(true)
+                await loadResets()
                 return
               }
             } catch {
@@ -512,7 +530,7 @@ window.__ModuleLoader__.load({
           stopPolling()
           setError('发起登录失败：' + String(loginFailure.message || loginFailure))
         }
-      }, [loadModels, stopPolling])
+      }, [loadModels, loadResets, stopPolling])
 
       const logout = useCallback(async () => {
         setBusy(true)
@@ -576,6 +594,37 @@ window.__ModuleLoader__.load({
           setChecking(false)
         }
       }, [])
+
+      /** 使用一张重置卡（不可撤销，二次确认后调用）。 */
+      const consumeReset = useCallback(async () => {
+        const count = resetInfo && Number(resetInfo.availableCount) > 0 ? Number(resetInfo.availableCount) : 0
+        if (count <= 0) return
+        if (typeof window !== 'undefined') {
+          const ok = window.confirm(
+            `确定使用一张重置卡吗？\n\n将立即重置 5 小时 / 每周限流窗口，操作不可撤销。\n当前可用：${count} 张`,
+          )
+          if (!ok) return
+        }
+        setResetting(true)
+        setError('')
+        setNotice('')
+        try {
+          const data = await postOp({ op: 'consumeReset' })
+          const result = data.result || {}
+          const messages = {
+            reset: `已重置 ${result.windowsReset || 1} 个限流窗口。`,
+            nothing_to_reset: '当前没有需要重置的限流窗口（额度还充足），本次未消耗重置卡。',
+            no_credit: '没有可用的重置卡。',
+            already_redeemed: '这次重置请求此前已完成（幂等），按成功处理。',
+          }
+          setNotice(messages[result.code] || `重置结果：${result.code || 'unknown'}`)
+          await loadResets()
+        } catch (resetFailure) {
+          setError('重置失败：' + String(resetFailure.message || resetFailure))
+        } finally {
+          setResetting(false)
+        }
+      }, [resetInfo, loadResets])
 
       if (!auth) return h('div', { style: styles.hint }, 'Codex 设置加载中…')
 
@@ -768,6 +817,62 @@ window.__ModuleLoader__.load({
           ),
           notice ? h('div', { style: styles.notice }, notice) : null,
           error ? h('div', { style: styles.error }, error) : null,
+        ),
+        // ── 重置额度（重置卡） ──────────────────────────────────────
+        h(
+          'div',
+          { style: styles.card },
+          h('div', { style: styles.title }, '🎟️ 重置额度（重置卡）'),
+          h(
+            'div',
+            { style: styles.hint },
+            loggedIn
+              ? resetInfo
+                ? `当前可用 ${Number(resetInfo.availableCount) || 0} 张重置卡${
+                    resetInfo.credits && resetInfo.credits[0] && resetInfo.credits[0].expiresAt
+                      ? `，最近一张 ${formatDate(resetInfo.credits[0].expiresAt)} 过期`
+                      : ''
+                  }。`
+                : '正在读取重置卡…'
+              : '登录 OpenAI 账号后可以查看和使用重置卡。',
+          ),
+          resetInfo && Array.isArray(resetInfo.credits) && resetInfo.credits.length > 0
+            ? h(
+                'div',
+                { style: { display: 'flex', flexDirection: 'column', gap: '3px' } },
+                resetInfo.credits.slice(0, 3).map((credit) =>
+                  h(
+                    'div',
+                    { key: credit.id, style: { fontSize: '12px', opacity: 0.7 } },
+                    `· ${credit.title}${credit.expiresAt ? `（${formatDate(credit.expiresAt)} 过期）` : ''}`,
+                  ),
+                ),
+              )
+            : null,
+          h(
+            'div',
+            { style: styles.row },
+            h(
+              'button',
+              {
+                type: 'button',
+                style: styles.buttonPrimary,
+                onClick: consumeReset,
+                disabled: !loggedIn || resetting || !resetInfo || Number(resetInfo.availableCount) <= 0,
+              },
+              resetting ? '重置中…' : '使用一张重置额度',
+            ),
+            h(
+              'button',
+              { type: 'button', style: styles.button, onClick: loadResets, disabled: !loggedIn },
+              '刷新重置卡',
+            ),
+          ),
+          h(
+            'div',
+            { style: styles.hint },
+            '重置会立即恢复 5 小时 / 每周的限流窗口，操作不可撤销；只在额度确实受限时使用。',
+          ),
         ),
         // ── 使用方式 ────────────────────────────────────────────────
         h(
