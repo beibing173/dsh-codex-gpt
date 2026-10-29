@@ -41,6 +41,10 @@
   - 更新节奏：余额每 **10 秒**自动刷新；点当前那家的名字会**立即强制重查**；切模型 **3 秒**内自动跟随；
   - 余额端点跟随 `DEEPSEEK_BASE_URL`（与 DeepSeek 适配器同口径），没设就用官方 `api.deepseek.com/user/balance`。
 - 如果机器上还装了别的用量插件（如 `@dougen/dsh-deepseek-usage`），它已经配好的其它 AI（Kimi / GLM / OpenRouter / MiniMax …）会自动出现在切换列表里；不装也完全可以只用本插件。
+- **Trae / WorkBuddy 积分**：装了 [`dsh-connect-trae`](https://www.npmjs.com/package/dsh-connect-trae) 或 [`dsh-connect-workbuddy`](https://www.npmjs.com/package/dsh-connect-workbuddy) 时，卡片会读它们各自暴露的只读用量端点（`/plugins/dsh-connect-trae/usage`、`/plugins/dsh-connect-workbuddy/usage`），把剩余积分作为独立一页显示：
+  - Trae：显示**剩余**积分（`credits.available`，缺省时退 `workAvailable + generalAvailable`），并附累计发放与签到状态；
+  - WorkBuddy：显示剩余合计（`credits.total`），并在有临近过期积分时提示；
+  - 未登录 / 未安装时这一页不出现，也不会显示成 0 误导；当前会话用的是哪一家，auto 模式就优先显示哪一家。
 
 ### 4. 诊断
 
@@ -123,7 +127,7 @@ DSH 中通过 **插件管理** 以本地 bundle 方式安装：
 | `network.js` | 外网连通性检查 |
 | `client.js` | 浏览器侧：输入框授权胶囊、侧边栏用量卡片、设置页 |
 | `cordis.patch.yml` | 插入主机行 `id: dsh-codex-gpt` |
-| `test/` | `node --test` 单测（107 条，含安全回归、卡片真实渲染与客户端冒烟） |
+| `test/` | `node --test` 单测（113 条，含安全回归、卡片真实渲染、第三方积分解析与客户端冒烟） |
 
 数据流（方式 A）：
 

@@ -502,6 +502,59 @@ window.__ModuleLoader__.load({
     /** 侧边栏底部 Codex 用量卡片；拿不到数据或侧栏收起时不渲染。 */
     /** 侧边栏底部用量卡片：可在 ChatGPT / DeepSeek / 其它已配置的 AI 之间切换。 */
     const USAGE_ACCOUNTS_PATH = '/api/deepseek-usage/accounts'
+    /**
+     * 第三方 connect 插件（Trae / WorkBuddy）的只读用量端点。
+     * 它们各自暴露 `/plugins/<id>/usage`，返回里带 credits；卡片直接读，不复制它们的登录逻辑。
+     */
+    const CONNECT_PLUGINS = [
+      { id: 'trae', label: 'Trae', path: '/plugins/dsh-connect-trae/usage', providers: ['trae', 'trae-enterprise'] },
+      {
+        id: 'workbuddy',
+        label: 'WorkBuddy',
+        path: '/plugins/dsh-connect-workbuddy/usage',
+        providers: ['workbuddy', 'workbuddy-global'],
+      },
+    ]
+
+    /**
+     * 从 connect 插件的 usage 文档里取出「剩余积分」。
+     * Trae 的 total 是累计发放，剩余在 available/workAvailable/generalAvailable；
+     * WorkBuddy 的 total 本身就是剩余合计，另有 expiringSoon。
+     * 未登录或形状不对返回 null（卡片就不显示这一家，不显示 0 误导）。
+     */
+    function parseConnectPoints(id, doc) {
+      if (!doc || typeof doc !== 'object' || doc.status !== 'signed-in') return null
+      const credits = doc.credits && typeof doc.credits === 'object' ? doc.credits : null
+      if (!credits) return null
+      const num = (value) => (Number.isFinite(Number(value)) ? Number(value) : null)
+      if (id === 'trae') {
+        const available =
+          num(credits.available) ?? ((num(credits.workAvailable) || 0) + (num(credits.generalAvailable) || 0))
+        if (available === null) return null
+        const total = num(credits.total)
+        return {
+          id,
+          label: 'Trae',
+          total: available,
+          sub: total !== null ? `累计 ${total}` : '',
+          checkin: doc.checkin && doc.checkin.checkedIn ? '今日已签到' : '',
+        }
+      }
+      if (id === 'workbuddy') {
+        const total = num(credits.total)
+        if (total === null) return null
+        const soon = num(credits.expiringSoon)
+        return {
+          id,
+          label: 'WorkBuddy',
+          total,
+          sub: soon && soon > 0 ? `即将过期 ${soon}` : '',
+          checkin: doc.checkin && doc.checkin.todayCheckedIn ? '今日已签到' : '',
+        }
+      }
+      return null
+    }
+
     /** provider id → 展示名（缺省用接口返回的 displayName）。 */
     const USAGE_LABELS = {
       chatgpt: 'ChatGPT',
@@ -718,6 +771,7 @@ window.__ModuleLoader__.load({
       const wide = !(props && props.wide === false)
       const [usage, setUsage] = useState(null)
       const [rows, setRows] = useState([])
+      const [connectPoints, setConnectPoints] = useState({})
       const [dashboard, setDashboard] = useState(null)
       const [tab, setTab] = useState('')
       const [manualKey, setManualKey] = useState('')
@@ -764,6 +818,32 @@ window.__ModuleLoader__.load({
         } catch {
           // 静默：没有该插件时只显示 ChatGPT
         }
+      }, [])
+
+      /** 读取 Trae / WorkBuddy 的积分（各自的只读 usage 端点，未安装/未登录就跳过）。 */
+      const loadConnectPoints = useCallback(async () => {
+        const seq = ++providersSeq.current
+        const results = await Promise.all(
+          CONNECT_PLUGINS.map(async (plugin) => {
+            try {
+              const response = await fetch(plugin.path, {
+                headers: { Accept: 'application/json' },
+                cache: 'no-store',
+              })
+              if (!response.ok) return [plugin.id, null]
+              const doc = await response.json()
+              return [plugin.id, parseConnectPoints(plugin.id, doc)]
+            } catch {
+              return [plugin.id, null]
+            }
+          }),
+        )
+        if (!mounted.current || seq !== providersSeq.current) return
+        const next = {}
+        for (const [id, value] of results) {
+          if (value) next[id] = value
+        }
+        setConnectPoints(next)
       }, [])
 
       /**
@@ -838,13 +918,19 @@ window.__ModuleLoader__.load({
         async (force = false) => {
           const seq = ++requestSeq.current
           setBusy(true)
-          await Promise.all([loadChatgpt(), loadProviders(), loadPreferred(), loadDashboard(force)])
+          await Promise.all([
+            loadChatgpt(),
+            loadProviders(),
+            loadConnectPoints(),
+            loadPreferred(),
+            loadDashboard(force),
+          ])
           if (mounted.current && seq === requestSeq.current) {
             setBusy(false)
             setClock(Date.now())
           }
         },
-        [loadChatgpt, loadProviders, loadPreferred, loadDashboard],
+        [loadChatgpt, loadProviders, loadConnectPoints, loadPreferred, loadDashboard],
       )
 
       useEffect(() => {
@@ -864,6 +950,8 @@ window.__ModuleLoader__.load({
         const dashTimer = setInterval(() => {
           if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return
           void loadDashboard()
+          // 第三方积分（Trae / WorkBuddy）跟着同一个节奏刷新。
+          void loadConnectPoints()
         }, 10_000)
         // 峰谷倒计时需要比整体刷新更勤一点（只改本地时钟，不请求网络）。
         const clockTimer = setInterval(() => setClock(Date.now()), 30_000)
@@ -900,8 +988,15 @@ window.__ModuleLoader__.load({
           seen.add(row.id)
           list.push({ id: row.id, label: usageLabelOf(row), kind: row.kind, row })
         }
+        // Trae / WorkBuddy 的积分（读到才显示，未登录/未安装就不占位）。
+        for (const plugin of CONNECT_PLUGINS) {
+          const points = connectPoints && connectPoints[plugin.id]
+          if (!points || seen.has(plugin.id)) continue
+          seen.add(plugin.id)
+          list.push({ id: plugin.id, label: plugin.label, kind: 'points', row: points })
+        }
         return list
-      }, [rows])
+      }, [connectPoints, rows])
 
       /** auto 模式：按「当前在用的模型」决定先显示哪一家。 */
       /** 当前会话的模型（由输入框胶囊写入，比全局默认模型更贴近「我现在在用什么」）。 */
@@ -912,6 +1007,9 @@ window.__ModuleLoader__.load({
         const provider = (sessionModel && sessionModel.provider) || (currentModel && currentModel.provider) || ''
         if (provider === 'openai-codex' || provider === 'chatgpt-codex') return 'chatgpt'
         if (provider.startsWith('deepseek')) return 'deepseek'
+        // Trae / WorkBuddy：按 provider 找到对应积分卡（含 -global / -enterprise 变体）。
+        const connect = CONNECT_PLUGINS.find((plugin) => plugin.providers.includes(provider))
+        if (connect && tabs.some((item) => item.id === connect.id)) return connect.id
         // 其它（含不支持/不认识的 provider）：有对应余额卡就用它，否则退 DeepSeek 余额。
         // 只有确实在用本插件的 ChatGPT 时才显示 ChatGPT 限额，避免默认停在 GPT。
         return tabs.some((item) => item.id === provider) ? provider : 'deepseek'
@@ -987,6 +1085,34 @@ window.__ModuleLoader__.load({
 
       /** 其它 AI 的卡片主体：余额类显示金额，用量类显示各窗口剩余。 */
       const bodyFor = (item) => {
+        if (item.kind === 'points') {
+          // Trae / WorkBuddy 的剩余积分：大数字 + 「积分」小字，下面附累计/即将过期与签到状态。
+          const points = item.row || {}
+          const total = Number.isFinite(Number(points.total)) ? Number(points.total) : null
+          const lines = [
+            h(
+              'div',
+              { key: 'points', style: { display: 'flex', alignItems: 'baseline', gap: '6px' } },
+              h(
+                'span',
+                { style: { ...usageStyles.brand, fontSize: '19px', letterSpacing: 0 } },
+                total === null ? '—' : String(total),
+              ),
+              h('span', { style: { ...usageStyles.hint, fontSize: '10px' } }, '积分'),
+            ),
+          ]
+          const notes = [points.sub, points.checkin].filter((text) => typeof text === 'string' && text)
+          if (notes.length > 0) {
+            lines.push(
+              h(
+                'div',
+                { key: 'notes', style: { ...usageStyles.hint, fontSize: '10px', opacity: 0.6 } },
+                notes.join(' · '),
+              ),
+            )
+          }
+          return lines
+        }
         if (item.kind === 'dashboard') {
           const data = dashboard && dashboard.deepseek
           const peak = dashboard && dashboard.peak
@@ -1123,6 +1249,7 @@ window.__ModuleLoader__.load({
           ),
           active.kind === 'chatgpt' && planText ? h('span', { style: usageStyles.badge }, planText) : null,
           active.kind === 'dashboard' ? h('span', { style: usageStyles.badge }, t('paygo')) : null,
+          active.kind === 'points' ? h('span', { style: usageStyles.badge }, '积分') : null,
           h(
             'span',
             { style: { marginLeft: 'auto', fontSize: '10px', opacity: 0.45 } },
@@ -1827,8 +1954,8 @@ window.__ModuleLoader__.load({
     return {
       name: 'codex-client',
       inject: ['slots'],
-      // 仅供测试：验证词典内容与语言探测（不影响运行时）。
-      __test: { I18N, translate, detectLang, normalizeLang },
+      // 仅供测试：校验第三方积分解析与文案字典（不影响运行时）。
+      __test: { parseConnectPoints, I18N, translate, detectLang, normalizeLang },
       apply(ctx) {
         // locale 服务只取一次：渲染时不再访问 ctx 上的 getter，避免取值本身把渲染弄崩。
         // 拿不到就回退中文（组件内另有 <html lang> 兜底探测）。
