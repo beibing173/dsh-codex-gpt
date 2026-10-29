@@ -1,4 +1,6 @@
-# dsh-codex-gpt
+# dsh-codex-gpt（双脑）
+
+> **中文名：双脑** —— DeepSeek 与 ChatGPT 两个脑子协作：日常由 DeepSeek 处理，难题交给 GPT 做独立分析或构建，侧边栏一块面板同时看着各家的额度与积分。
 
 把 **ChatGPT / OpenAI Codex** 接入 [DeepSeek Harness (DSH)](https://github.com/deepseek-ai) 的插件：既能在模型选择器里把 **ChatGPT 当作一个 LLM provider 直接对话**，也能让 DeepSeek 在会话内按需把难任务**转交给 GPT 做独立分析或代码构建**。
 
