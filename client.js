@@ -624,6 +624,9 @@ window.__ModuleLoader__.load({
     }
 
     function CodexUsageCard(props) {
+      const locale = props && props.locale
+      const lang = useLang(locale)
+      const t = (key, ...args) => translate(lang, key, ...args)
       const wide = !(props && props.wide === false)
       const [usage, setUsage] = useState(null)
       const [rows, setRows] = useState([])
@@ -1023,6 +1026,9 @@ window.__ModuleLoader__.load({
 
     /** 设置 →「ChatGPT」页。 */
     function CodexSettings(props) {
+      const locale = props && props.locale
+      const lang = useLang(locale)
+      const t = (key, ...args) => translate(lang, key, ...args)
       const [auth, setAuth] = useState(null)
       const [defaultModel, setDefaultModel] = useState('')
       const [autoConsult, setAutoConsult] = useState(true)

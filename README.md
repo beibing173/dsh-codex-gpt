@@ -123,7 +123,7 @@ DSH 中通过 **插件管理** 以本地 bundle 方式安装：
 | `network.js` | 外网连通性检查 |
 | `client.js` | 浏览器侧：输入框授权胶囊、侧边栏用量卡片、设置页 |
 | `cordis.patch.yml` | 插入主机行 `id: dsh-codex-gpt` |
-| `test/` | `node --test` 单测（93 条，含安全回归、客户端冒烟与 i18n 校验） |
+| `test/` | `node --test` 单测（102 条，含安全回归、卡片真实渲染、客户端冒烟与 i18n 校验） |
 
 数据流（方式 A）：
 
