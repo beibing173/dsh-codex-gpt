@@ -531,6 +531,19 @@ test('轻任务委派开关：默认关，可开关并回显模型', async () =>
   assert.equal(off.json.global.delegateLightTasks, false)
 })
 
+test('按模型名识别 GPT 的保险开关：默认关，可开关并回显', async () => {
+  writeAuth()
+  const harness = createHarness()
+  const before = await callApi(harness, {})
+  assert.equal(before.json.global.gptNameDetect, false)
+  const on = await callApi(harness, { method: 'POST', body: { op: 'setGlobal', patch: { gptNameDetect: true } } })
+  assert.equal(on.status, 200)
+  assert.equal(on.json.global.gptNameDetect, true)
+  const off = await callApi(harness, { method: 'POST', body: { op: 'setGlobal', patch: { gptNameDetect: false } } })
+  assert.equal(off.status, 200)
+  assert.equal(off.json.global.gptNameDetect, false)
+})
+
 test('外网连通性检查：3 条链路并行探测', async (t) => {
   const original = globalThis.fetch
   t.after(() => {

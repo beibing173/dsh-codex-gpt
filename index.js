@@ -1,4 +1,4 @@
-/**
+﻿/**
  * dsh-codex — DeepSeek Harness 的 Codex 桥接插件（Host 侧，OAuth 版）。
  *
  * 设计目标：
@@ -60,12 +60,12 @@ export const Config = z.object({
   defaultModel: z
     .string()
     .default(DEFAULT_MODEL)
-    .description('默认使用的 Codex 模型（候选从 OpenAI 实时拉取）。')
+    .description('默认使用的 ChatGPT 模型（候选从 OpenAI 实时拉取）。')
     .volatile(),
   autoConsult: z
     .boolean()
     .default(true)
-    .description('允许 DeepSeek 在已授权会话里根据任务强度自主调用 Codex；关闭后只在用户明确要求时调用。')
+    .description('允许 DeepSeek 在已授权会话里根据任务强度自主调用 ChatGPT；关闭后只在用户明确要求时调用。')
     .volatile(),
   allowLanAccess: z
     .boolean()
@@ -81,6 +81,13 @@ export const Config = z.object({
     .string()
     .default('')
     .description('轻任务委派使用的 DeepSeek 模型 id；留空则自动选择当前可用模型。')
+    .volatile(),
+  gptNameDetect: z
+    .boolean()
+    .default(false)
+    .description(
+      '保险开关：开启后，若其他 provider 提供的模型 id 也形如 gpt-* / o3-*，输入框胶囊同样按「GPT」识别（显示 DeepSeek）。默认关闭，只认本插件的 ChatGPT provider。',
+    )
     .volatile(),
 })
 
@@ -250,25 +257,25 @@ function createSessionStore(options) {
 function renderPolicy(state, settings) {
   if (!state.loggedIn) {
     return [
-      '## Codex 专业分析通道（dsh-codex）',
-      '本机尚未登录 OpenAI 账号，Codex 当前不可用。',
+      '## ChatGPT 专业分析通道（dsh-codex）',
+      '本机尚未登录 OpenAI 账号，ChatGPT 当前不可用。',
       '- 常规任务全部用你自身的 DeepSeek 能力完成，不要调用 `codex` 工具。',
-      '- 若用户需要 GPT/Codex 参与，提示用户打开 设置 →「Codex」页，点击「登录 OpenAI 账号」完成授权。',
+      '- 若用户需要 GPT/Codex 参与，提示用户打开 设置 →「ChatGPT」页，点击「登录 OpenAI 账号」完成授权。',
     ].join('\n')
   }
   if (!state.enabled) {
     return [
-      '## Codex 专业分析通道（dsh-codex）',
-      `本机已登录 OpenAI（${state.planLabel || '未知计划'}），但本会话【未授权】使用 Codex。`,
+      '## ChatGPT 专业分析通道（dsh-codex）',
+      `本机已登录 OpenAI（${state.planLabel || '未知计划'}），但本会话【未授权】使用 ChatGPT。`,
       '- 常规任务全部用你自身的 DeepSeek 能力完成，不要调用 `codex` 工具。',
       '- 若判断任务强度很高、确实需要第二模型做专业分析或构建，先向用户说明理由，',
-      '  并提示用户点击输入框左侧的「Codex」按钮授权本会话。',
+      '  并提示用户点击输入框左侧的「ChatGPT」按钮授权本会话。',
       '- 授权后本段会自动变成已授权版本，下一轮即可使用。',
     ].join('\n')
   }
   const lines = [
-    '## Codex 专业分析通道（dsh-codex）',
-    `本会话已由用户【授权】使用 Codex，默认模型：\`${settings.model === 'auto' ? '自动选择' : settings.model}\`（订阅：${state.planLabel || '未知'}）。`,
+    '## ChatGPT 专业分析通道（dsh-codex）',
+    `本会话已由用户【授权】使用 ChatGPT，默认模型：\`${settings.model === 'auto' ? '自动选择' : settings.model}\`（订阅：${state.planLabel || '未知'}）。`,
     '- 常规任务（日常问答、简单改动、轻量检索、一般代码编辑）仍由你直接完成，不要调用 codex。',
     settings.autoConsult
       ? '- 出现下列情况时，你应主动调用 `codex` 工具获取独立专业分析或构建结果，再结合环境事实给出最终答案：'
@@ -278,7 +285,7 @@ function renderPolicy(state, settings) {
     '  · 需要第二模型交叉验证，或用户明确要求 GPT 参与。',
     '- 调用时把目标、验收标准、约束、相关代码与错误信息完整放进 `task`/`context`；',
     '  `mode` 用 `analyze` 做分析评审，用 `build` 让它直接产出可落地代码。',
-    '- Codex 输出是专业参考：你负责核对真实环境、执行改动、向用户解释差异与取舍。',
+    '- ChatGPT 输出是专业参考：你负责核对真实环境、执行改动、向用户解释差异与取舍。',
   ]
   return lines.join('\n')
 }
@@ -330,6 +337,8 @@ export function apply(ctx, config) {
   const autoConsult = () => readValue('autoConsult') !== false
   const allowLanAccess = () => readValue('allowLanAccess') === true
   const delegateLightTasks = () => readValue('delegateLightTasks') === true
+  /** 保险开关：是否按模型名把其他 provider 的 GPT 模型也算作 GPT（默认关闭）。 */
+  const gptNameDetect = () => readValue('gptNameDetect') === true
   const delegateModel = () => {
     const raw = readValue('deepseekModel')
     return typeof raw === 'string' ? raw.trim() : ''
@@ -400,7 +409,7 @@ export function apply(ctx, config) {
   ctx.tools.register({
     name: 'codex',
     description:
-      '把高难度任务交给 OpenAI Codex/GPT 做独立的专业分析或代码构建（走用户 ChatGPT 订阅额度，需先登录并授权本会话）。仅当本会话已被用户手动授权后可用；用于复杂架构/疑难 bug/安全审计/方案评审，或用户明确要求 GPT 参与时。普通任务不要调用。',
+      '把高难度任务交给 OpenAI ChatGPT 做独立的专业分析或代码构建（走用户 ChatGPT 订阅额度，需先登录并授权本会话）。仅当本会话已被用户手动授权后可用；用于复杂架构/疑难 bug/安全审计/方案评审，或用户明确要求 GPT 参与时。普通任务不要调用。',
     parameters: {
       type: 'object',
       properties: {
@@ -429,7 +438,7 @@ export function apply(ctx, config) {
     timeoutMs: CODEX_TIMEOUT_MS + 30_000,
     async execute(args, exec) {
       const sessionId = exec && exec.agent && exec.agent.id ? String(exec.agent.id) : ''
-      if (!sessionId) return '无法确定当前会话，已拒绝调用 Codex。请在正常会话中重试。'
+      if (!sessionId) return '无法确定当前会话，已拒绝调用 ChatGPT。请在正常会话中重试。'
 
       const credential = await ensureAccessToken(authStore)
       if (!credential) {
@@ -711,6 +720,7 @@ export function apply(ctx, config) {
         allowLanAccess: allowLanAccess(),
         delegateLightTasks: delegateLightTasks(),
         deepseekModel: delegateModel(),
+        gptNameDetect: gptNameDetect(),
       },
       session: sessionId ? { ...store.get(sessionId), model: effectiveModel(sessionId) } : null,
     }
@@ -740,6 +750,7 @@ export function apply(ctx, config) {
       if (typeof patch.autoConsult === 'boolean') next.autoConsult = patch.autoConsult
       if (typeof patch.allowLanAccess === 'boolean') next.allowLanAccess = patch.allowLanAccess
       if (typeof patch.delegateLightTasks === 'boolean') next.delegateLightTasks = patch.delegateLightTasks
+      if (typeof patch.gptNameDetect === 'boolean') next.gptNameDetect = patch.gptNameDetect
       if (typeof patch.deepseekModel === 'string') next.deepseekModel = patch.deepseekModel.trim().slice(0, 200)
       if (Object.keys(next).length > 0) await writeConfig(next)
       return

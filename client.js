@@ -2,9 +2,10 @@
  * dsh-codex — 浏览器侧（dsh.client 声明，包入口 dsh-codex/client）。
  *
  * 三处 UI：
- *   1. 输入框左侧「Codex」胶囊按钮（conversation.input.left）：点击授权/撤销当前会话。
+ *   1. 输入框左侧胶囊按钮（conversation.input.left）：点击授权/撤销当前会话；
+ *      显示名随当前模型变化（ChatGPT 时显示「DeepSeek」，其他模型时显示「ChatGPT」），仅改显示。
  *   2. 侧边栏底部用量卡片（sidebar.footer.action）：5 小时 / 每周限额、订阅状态、有效期。
- *   3. 设置 →「Codex」页（settings.section）：登录 OpenAI 账号（跳官网 OAuth）、
+ *   3. 设置 →「ChatGPT」页（settings.section）：登录 OpenAI 账号（跳官网 OAuth）、
  *      模型列表（从 OpenAI 实时拉取）、自主调用开关、外网连通性检查。
  *
  * 数据通道：Host 的同源 HTTP 路由 `/dsh-codex-api`（GET 读状态，POST 写操作）。
@@ -13,10 +14,18 @@ window.__ModuleLoader__.load({
   id: 'dsh-codex-gpt',
   factory: (require) => {
     const React = require('react')
-    const { useCallback, useEffect, useRef, useState } = React
+    const { useCallback, useEffect, useRef, useState, useSyncExternalStore } = React
     const h = React.createElement
 
     const API = '/dsh-codex-api'
+
+    /** 没有模型目录时用的恒定订阅/取值，保证 hook 调用顺序稳定。 */
+    const noopSubscribe = () => () => {}
+    const emptyProviderValue = () => ''
+    /** 本插件 ChatGPT provider 的内部 id；其余 provider 一律视为「DeepSeek」。 */
+    const CHATGPT_PROVIDER_ID = 'chatgpt-codex'
+    /** 保险开关开启时，用来判断「其他 provider 提供的模型名看起来像 GPT」。 */
+    const LOOKS_LIKE_GPT_RE = /^(?:gpt|o[0-9]|chatgpt)/i
 
     const styles = {
       page: { display: 'flex', flexDirection: 'column', gap: '14px', padding: '4px 0', maxWidth: '720px' },
@@ -139,23 +148,42 @@ window.__ModuleLoader__.load({
       )
     }
 
-    /** 输入框左侧的 Codex 胶囊按钮（会话作用域）。 */
+    /** 输入框左侧的授权胶囊按钮（会话作用域）。 */
     function CodexToggle(props) {
       const injected = props && props.sessionId ? props.sessionId : props && props.inject && props.inject.sessionId
       const sessionId = injected ? String(injected) : ''
-      const [state, setState] = useState({ status: 'loading', session: null, auth: null, error: '' })
+      const [state, setState] = useState({ status: 'loading', session: null, auth: null, global: null, error: '' })
       const [busy, setBusy] = useState(false)
+
+      // 只读当前会话的 provider / model（不切换、不写入），仅用于决定胶囊显示的名字。
+      const directoryStore = props && props.directoryStore
+      const loadModels = props && props.loadModels
+      const selection = useSyncExternalStore(
+        directoryStore ? (listener) => directoryStore.subscribe(listener) : noopSubscribe,
+        directoryStore
+          ? () => {
+              const snapshot = directoryStore.getSnapshot()
+              const current = snapshot && snapshot.current
+              return current ? `${current.provider || ''}\u0000${current.model || ''}` : ''
+            }
+          : emptyProviderValue,
+      )
+      const [provider = '', currentModelId = ''] = selection ? selection.split('\u0000') : []
+
+      useEffect(() => {
+        if (typeof loadModels === 'function') loadModels()
+      }, [loadModels])
 
       const reload = useCallback(async () => {
         if (!sessionId) {
-          setState({ status: 'unavailable', session: null, auth: null, error: '当前没有会话' })
+          setState({ status: 'unavailable', session: null, auth: null, global: null, error: '当前没有会话' })
           return
         }
         try {
           const data = await loadState(sessionId)
-          setState({ status: 'ready', session: data.session, auth: data.auth, error: '' })
+          setState({ status: 'ready', session: data.session, auth: data.auth, global: data.global || null, error: '' })
         } catch (error) {
-          setState({ status: 'error', session: null, auth: null, error: String(error.message || error) })
+          setState({ status: 'error', session: null, auth: null, global: null, error: String(error.message || error) })
         }
       }, [sessionId])
 
@@ -167,27 +195,34 @@ window.__ModuleLoader__.load({
       const loggedIn = Boolean(state.auth && state.auth.loggedIn === true)
       const unavailable = state.status === 'error' || state.status === 'unavailable'
       const model = (state.session && state.session.model) || (state.auth && state.auth.planLabel) || ''
+      // 显示名规则（仅显示，不影响点击行为）：
+      //   默认：当前 provider 是本插件 ChatGPT → 显示 DeepSeek，其他 → 显示 ChatGPT
+      //   保险开关 gptNameDetect 开启后：其他 provider 但模型 id 形如 gpt-*/o3-* 也按 GPT 识别 → 显示 DeepSeek
+      const nameDetect = Boolean(state.global && state.global.gptNameDetect === true)
+      const isOwnChatGpt = provider === CHATGPT_PROVIDER_ID
+      const isOtherGptNamed = nameDetect && LOOKS_LIKE_GPT_RE.test(currentModelId || '')
+      const label = isOwnChatGpt || isOtherGptNamed ? 'DeepSeek' : 'ChatGPT'
 
       const toggle = useCallback(async () => {
         if (!sessionId || busy || unavailable) return
         setBusy(true)
         try {
           const data = await postOp({ op: 'setSessionEnabled', sessionId, enabled: !enabled })
-          setState({ status: 'ready', session: data.session, auth: data.auth, error: '' })
+          setState((prev) => ({ status: 'ready', session: data.session, auth: data.auth, global: prev.global, error: '' }))
         } catch (error) {
-          if (typeof window !== 'undefined') window.alert('Codex 开关失败：' + String(error.message || error))
+          if (typeof window !== 'undefined') window.alert('ChatGPT 开关失败：' + String(error.message || error))
         } finally {
           setBusy(false)
         }
       }, [sessionId, enabled, busy, unavailable])
 
       const title = unavailable
-        ? 'Codex 状态不可用：' + (state.error || '服务未就绪')
+        ? `${label} 状态不可用：` + (state.error || '服务未就绪')
         : !loggedIn
-          ? '尚未登录 OpenAI 账号：请先到 设置 → Codex 页登录，再点这里授权本会话。'
+          ? '尚未登录 OpenAI 账号：请先到 设置 → ChatGPT 页登录，再点这里授权本会话。'
           : enabled
-            ? `本会话已授权 Codex（模型 ${model || '默认'}）。点击撤销授权。`
-            : '本会话未授权 Codex。点击允许本会话在需要时调用 GPT/Codex 做专业分析。'
+            ? `本会话已授权 ChatGPT（模型 ${model || '默认'}）。点击撤销授权。`
+            : '本会话未授权 ChatGPT。点击允许本会话在需要时调用 GPT 做专业分析。'
 
       return h(
         'button',
@@ -197,7 +232,7 @@ window.__ModuleLoader__.load({
           disabled: unavailable || busy,
           title,
           'aria-pressed': enabled ? 'true' : 'false',
-          'aria-label': enabled ? 'Codex 已授权，点击撤销' : 'Codex 未授权，点击允许',
+          'aria-label': enabled ? `${label} 已授权，点击撤销` : `${label} 未授权，点击允许`,
           style: {
             display: 'inline-flex',
             alignItems: 'center',
@@ -228,7 +263,7 @@ window.__ModuleLoader__.load({
               : 'var(--dsw-alias-border-strong, rgba(128,128,128,.55))',
           },
         }),
-        h('span', null, 'Codex'),
+        h('span', null, label),
         busy ? h('span', { style: { fontSize: '10px', opacity: 0.6 } }, '…') : null,
       )
     }
@@ -350,14 +385,14 @@ window.__ModuleLoader__.load({
         'div',
         {
           onClick: () => void load(),
-          title: 'Codex 用量：点击刷新',
+          title: 'ChatGPT 用量：点击刷新',
           role: 'status',
           style: usageStyles.card,
         },
         h(
           'div',
           { style: usageStyles.head },
-          h('span', { style: usageStyles.brand }, 'Codex'),
+          h('span', { style: usageStyles.brand }, 'ChatGPT'),
           planText ? h('span', { style: usageStyles.badge }, planText) : null,
           resetCredits > 0
             ? h('span', { style: { marginLeft: 'auto', fontSize: '10px', opacity: 0.55 } }, `${resetCredits} 次重置`)
@@ -395,13 +430,14 @@ window.__ModuleLoader__.load({
       )
     }
 
-    /** 设置 →「Codex」页。 */
+    /** 设置 →「ChatGPT」页。 */
     function CodexSettings() {
       const [auth, setAuth] = useState(null)
       const [defaultModel, setDefaultModel] = useState('')
       const [autoConsult, setAutoConsult] = useState(true)
       const [allowLan, setAllowLan] = useState(false)
       const [delegateLight, setDelegateLight] = useState(false)
+      const [gptNameDetect, setGptNameDetect] = useState(false)
       const [deepseekModel, setDeepseekModel] = useState('')
       const [deepseekModels, setDeepseekModels] = useState([])
       const [deepseekModelsError, setDeepseekModelsError] = useState('')
@@ -466,6 +502,7 @@ window.__ModuleLoader__.load({
             setAutoConsult(data.global.autoConsult !== false)
             setAllowLan(data.global.allowLanAccess === true)
             setDelegateLight(data.global.delegateLightTasks === true)
+            setGptNameDetect(data.global.gptNameDetect === true)
             setDeepseekModel(data.global.deepseekModel || '')
           }
           if (data.auth && data.auth.loggedIn) {
@@ -596,7 +633,7 @@ window.__ModuleLoader__.load({
         try {
           await postOp({
             op: 'setGlobal',
-            patch: { defaultModel, autoConsult, allowLanAccess: allowLan, delegateLightTasks: delegateLight, deepseekModel },
+            patch: { defaultModel, autoConsult, allowLanAccess: allowLan, delegateLightTasks: delegateLight, deepseekModel, gptNameDetect },
           })
           setNotice('已保存并生效。')
         } catch (saveFailure) {
@@ -604,7 +641,7 @@ window.__ModuleLoader__.load({
         } finally {
           setBusy(false)
         }
-      }, [defaultModel, autoConsult, allowLan, delegateLight, deepseekModel])
+      }, [defaultModel, autoConsult, allowLan, delegateLight, deepseekModel, gptNameDetect])
 
       const checkNetwork = useCallback(async () => {
         setChecking(true)
@@ -651,7 +688,7 @@ window.__ModuleLoader__.load({
         }
       }, [resetInfo, loadResets])
 
-      if (!auth) return h('div', { style: styles.hint }, 'Codex 设置加载中…')
+      if (!auth) return h('div', { style: styles.hint }, 'ChatGPT 设置加载中…')
 
       const loggedIn = auth.loggedIn === true
       const untilDate = formatDate(auth.activeUntil)
@@ -769,7 +806,7 @@ window.__ModuleLoader__.load({
         h(
           'div',
           { style: styles.card },
-          h('div', { style: styles.title }, '🛠️ Codex 设置'),
+          h('div', { style: styles.title }, '🛠️ ChatGPT 设置'),
           h(
             'div',
             { style: styles.row },
@@ -875,6 +912,23 @@ window.__ModuleLoader__.load({
           h(
             'div',
             { style: styles.row },
+            h(ToggleBox, { on: gptNameDetect, onClick: () => setGptNameDetect(!gptNameDetect) }),
+            h(
+              'span',
+              { onClick: () => setGptNameDetect(!gptNameDetect), style: { fontSize: '13px', cursor: 'pointer' } },
+              '按模型名识别 GPT（保险开关，默认关闭）',
+            ),
+          ),
+          h(
+            'div',
+            { style: styles.hint },
+            gptNameDetect
+              ? '已开启：即使模型来自其他 provider，只要模型 id 形如 gpt-* / o3-*，输入框胶囊也会按「GPT」识别（显示 DeepSeek）。'
+              : '关闭时只认本插件的 ChatGPT provider；开启后才会额外按模型名判断，避免把别家同名模型误认成本插件的 GPT。',
+          ),
+          h(
+            'div',
+            { style: styles.row },
             h(
               'button',
               { type: 'button', style: styles.buttonPrimary, onClick: save, disabled: busy },
@@ -947,8 +1001,8 @@ window.__ModuleLoader__.load({
           h('div', { style: styles.title }, '使用方式'),
           h('div', { style: styles.hint }, '1. 点「登录 OpenAI 账号」，在官网完成授权（不用填 Key）。'),
           h('div', { style: styles.hint }, '2. 登录后模型列表会自动从 OpenAI 拉取，选一个默认模型并保存。'),
-          h('div', { style: styles.hint }, '3. 回到对话，点输入框左侧的「Codex」按钮授权当前会话（按钮变蓝）。'),
-          h('div', { style: styles.hint }, '4. 之后遇到高难度任务，DeepSeek 会自主调用 Codex；未授权的会话不产生任何额度消耗。'),
+          h('div', { style: styles.hint }, '3. 回到对话，点输入框左侧胶囊按钮授权当前会话（变蓝 = 已授权）。按钮名随当前模型变化：本插件 ChatGPT 时显示「DeepSeek」，其他模型时显示「ChatGPT」。'),
+          h('div', { style: styles.hint }, '4. 之后遇到高难度任务，DeepSeek 会自主调用 ChatGPT；未授权的会话不产生任何额度消耗。'),
         ),
       )
     }
@@ -957,13 +1011,36 @@ window.__ModuleLoader__.load({
       name: 'codex-client',
       inject: ['slots'],
       apply(ctx) {
+        /**
+         * 只读解析当前会话的模型目录（用于决定胶囊显示名）。
+         * modelDirectories 可能尚未就绪或未安装，失败时返回 null，胶囊回落到「ChatGPT」。
+         */
+        const resolveModelDirectory = (sessionId) => {
+          if (!sessionId) return null
+          try {
+            const service = ctx.get('modelDirectories')
+            if (!service || typeof service.directoryFor !== 'function') return null
+            const directory = service.directoryFor(sessionId)
+            return directory && directory.store ? directory : null
+          } catch {
+            return null
+          }
+        }
+
         ctx.slots.inject('conversation.input.left', () =>
           ctx.slots.register(
             {
               name: 'conversation.input.left',
               id: 'codex-toggle',
               order: 4,
-              inject: (sessionId) => ({ sessionId }),
+              inject: (sessionId) => {
+                const directory = resolveModelDirectory(sessionId)
+                return {
+                  sessionId,
+                  directoryStore: directory ? directory.store : null,
+                  loadModels: directory ? () => directory.load().catch(() => {}) : null,
+                }
+              },
             },
             CodexToggle,
           ),
@@ -974,7 +1051,7 @@ window.__ModuleLoader__.load({
               name: 'settings.section',
               id: 'dsh-codex',
               order: 60,
-              label: 'Codex',
+              label: 'ChatGPT',
             },
             CodexSettings,
           ),
@@ -985,7 +1062,7 @@ window.__ModuleLoader__.load({
               name: 'sidebar.footer.action',
               id: 'dsh-codex-usage',
               order: 101,
-              label: 'Codex 用量',
+              label: 'ChatGPT 用量',
             },
             (props) => h(CodexUsageCard, { wide: props && props.wide }),
           ),
