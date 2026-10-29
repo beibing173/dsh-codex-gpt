@@ -113,7 +113,9 @@ export function createCodexGptAdapter(opts) {
         throwIfAborted(signal)
         found = models.find((candidate) => candidate.slug === modelId)
       }
-    } catch {
+    } catch (error) {
+      // 取消必须继续冒泡，否则被取消的请求仍会返回模型信息并继续发送。
+      if (isAbortError(error, signal)) throw error
       found = undefined
     }
 
@@ -295,7 +297,8 @@ export function createCodexGptAdapter(opts) {
           type: 'tool-call',
           id: block.id,
           name: block.name,
-          arguments: parseToolArguments(block.argumentsText),
+          // DSH 契约：tool-call 的 arguments 必须是原始 JSON 字符串，不能是已解析对象。
+          arguments: block.argumentsText && block.argumentsText.trim() ? block.argumentsText : '{}',
         },
       })
       return chunks
@@ -510,7 +513,8 @@ export function createCodexGptAdapter(opts) {
       finished = true
       return
     } finally {
-      if (signal?.aborted) await cancelBody(response)
+      // 无论成功、失败还是提前 return，都必须释放上游连接，否则每次调用都会悬挂一条 reader/socket。
+      await cancelBody(response)
     }
 
     if (!finished) {
@@ -828,6 +832,15 @@ export async function* parseSse(body, signal) {
         const event = parseSseFrame(frame)
         if (event !== undefined) yield event
       }
+    }
+    // 上游尾包可能不带结尾空行：done 之后仍按边界切分，避免多帧被拼成一个、丢失 response.completed。
+    while (true) {
+      const boundary = findSseBoundary(buffer)
+      if (!boundary) break
+      const frame = buffer.slice(0, boundary.index)
+      buffer = buffer.slice(boundary.index + boundary.length)
+      const event = parseSseFrame(frame)
+      if (event !== undefined) yield event
     }
     if (buffer.trim()) {
       const event = parseSseFrame(buffer)

@@ -206,7 +206,8 @@ function createHarness(initialConfig = {}) {
 
 function makeRequest({ method = 'GET', url = '/dsh-codex-api', body, remoteAddress = '127.0.0.1', headers } = {}) {
   const chunks = body === undefined ? [] : [Buffer.from(JSON.stringify(body), 'utf8')]
-  const finalHeaders = headers || (method === 'POST' ? { 'content-type': 'application/json' } : {})
+  const baseHeaders = method === 'POST' ? { 'content-type': 'application/json', origin: 'http://127.0.0.1:26336' } : {}
+  const finalHeaders = { host: '127.0.0.1:26336', ...baseHeaders, ...(headers || {}) }
   return {
     method,
     url,
@@ -477,6 +478,18 @@ test('跨站请求被拒绝（Origin / Content-Type / 非回环）', async () =>
   assert.equal(lan.status, 403)
 })
 
+test('写操作缺少 Origin 时按跨站拒绝', async () => {
+  writeAuth()
+  const harness = createHarness()
+  const { status, json } = await callApi(harness, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', origin: undefined },
+    body: { op: 'setGlobal', patch: { autoConsult: false } },
+  })
+  assert.equal(status, 403)
+  assert.match(json.error, /Origin/)
+})
+
 test('局域网模式：只读放行，登录/兑换等写操作拒绝', async () => {
   writeAuth()
   const harness = createHarness()
@@ -542,6 +555,16 @@ test('按模型名识别 GPT 的保险开关：默认关，可开关并回显', 
   const off = await callApi(harness, { method: 'POST', body: { op: 'setGlobal', patch: { gptNameDetect: false } } })
   assert.equal(off.status, 200)
   assert.equal(off.json.global.gptNameDetect, false)
+})
+
+test('默认模型可显式清空：回到「自动选择」', async () => {
+  writeAuth()
+  const harness = createHarness()
+  const set = await callApi(harness, { method: 'POST', body: { op: 'setGlobal', patch: { defaultModel: 'gpt-5' } } })
+  assert.equal(set.json.global.defaultModel, 'gpt-5')
+  const cleared = await callApi(harness, { method: 'POST', body: { op: 'setGlobal', patch: { defaultModel: '' } } })
+  assert.equal(cleared.status, 200)
+  assert.equal(cleared.json.global.defaultModel, '')
 })
 
 test('外网连通性检查：3 条链路并行探测', async (t) => {

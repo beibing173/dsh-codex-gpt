@@ -1,4 +1,4 @@
-﻿/**
+/**
  * dsh-codex — DeepSeek Harness 的 Codex 桥接插件（Host 侧，OAuth 版）。
  *
  * 设计目标：
@@ -126,10 +126,37 @@ function planLabel(plan) {
   return PLAN_LABELS[plan.toLowerCase()] || plan
 }
 
-/** 是否本机回环请求。 */
+/** 是否本机回环请求。经过代理/隧道（带转发头）时一律视为远程，避免 LAN 隔离被绕过。 */
 function isLoopback(req) {
+  const headers = (req && req.headers) || {}
+  if (headers['x-forwarded-for'] || headers['x-real-ip'] || headers['forwarded'] || headers['cf-connecting-ip']) {
+    return false
+  }
   const address = (req && req.socket && req.socket.remoteAddress) || ''
   return address === '127.0.0.1' || address === '::1' || address === '::ffff:127.0.0.1'
+}
+
+/** 站点默认端口（同源比较时补全）。 */
+function defaultPort(protocol) {
+  return protocol === 'https:' ? '443' : '80'
+}
+
+/**
+ * 同源判断：协议 + 端口一致，且主机名属于本机白名单。
+ * 127.0.0.1 / localhost / [::1] 指向同一进程，互相访问都算同源；外部域名即使伪造 Origin 也会被拒。
+ */
+function isSameOrigin(originValue, expectedValue) {
+  try {
+    const incoming = new URL(String(originValue))
+    const expected = new URL(String(expectedValue))
+    if (incoming.protocol !== expected.protocol) return false
+    if ((incoming.port || defaultPort(incoming.protocol)) !== (expected.port || defaultPort(expected.protocol))) {
+      return false
+    }
+    return isAllowedHost(incoming.hostname.toLowerCase())
+  } catch {
+    return String(originValue) === String(expectedValue)
+  }
 }
 
 /** 本机允许的 Host 名（回环 + 本机网卡地址）。LAN 模式也用它挡 DNS rebinding。 */
@@ -440,20 +467,29 @@ export function apply(ctx, config) {
       const sessionId = exec && exec.agent && exec.agent.id ? String(exec.agent.id) : ''
       if (!sessionId) return '无法确定当前会话，已拒绝调用 ChatGPT。请在正常会话中重试。'
 
-      const credential = await ensureAccessToken(authStore)
-      if (!credential) {
+      // 先用内存/磁盘里的凭证判断登录态（不触发网络），再判会话授权。
+      const loggedIn = Boolean(describeCredential(authStore.read()))
+      if (!loggedIn) {
         return [
-          'Codex 不可用：本机尚未登录 OpenAI 账号。',
-          '请让用户打开 设置 →「Codex」页，点击「登录 OpenAI 账号」完成浏览器授权后重试。',
+          'ChatGPT 不可用：本机尚未登录 OpenAI 账号。',
+          '请让用户打开 设置 →「ChatGPT」页，点击「登录 OpenAI 账号」完成浏览器授权后重试。',
         ].join('\n')
       }
 
       const state = store.get(sessionId)
       if (!state.enabled) {
         return [
-          '本会话未授权使用 Codex，调用已被拒绝。',
-          '请让用户点击输入框左侧的「Codex」按钮授权本会话（或在设置页打开），授权后重试。',
+          '本会话未授权使用 ChatGPT，调用已被拒绝。',
+          '请让用户点击输入框左侧的「ChatGPT」按钮授权本会话（或在设置页打开），授权后重试。',
           '在授权前继续用你自身的 DeepSeek 能力完成任务；不要重复尝试调用。',
+        ].join('\n')
+      }
+
+      const credential = await ensureAccessToken(authStore)
+      if (!credential) {
+        return [
+          'ChatGPT 不可用：本机尚未登录 OpenAI 账号。',
+          '请让用户打开 设置 →「ChatGPT」页，点击「登录 OpenAI 账号」完成浏览器授权后重试。',
         ].join('\n')
       }
 
@@ -463,9 +499,11 @@ export function apply(ctx, config) {
       const mode = args?.mode === 'build' ? 'build' : 'analyze'
       const requested = typeof args?.model === 'string' ? args.model.trim() : ''
       const configured = configuredModel()
+      // 会话里存的模型若是「自动选择」，要按任务现算，不能把 'auto' 当 slug 发给后端。
+      const sessionModel = state.model && state.model !== 'auto' ? state.model : ''
       const model =
         requested ||
-        state.model ||
+        sessionModel ||
         (configured && configured !== 'auto' ? configured : autoGptModel(`${task}\n${context}`))
 
       const timeout = AbortSignal.timeout(CODEX_TIMEOUT_MS)
@@ -512,7 +550,11 @@ export function apply(ctx, config) {
   // ── 1b. DeepSeek 轻任务委派（GPT 模式下把轻任务交 DeepSeek V4.1 收尾） ──────
   const deepseekProvider = () => {
     try {
-      const ids = ctx.llm.listProviders().map((provider) => provider.id)
+      // 绝不允许把委派目标落在本插件自己的 ChatGPT provider 上，否则会自我调用、额度翻倍。
+      const ids = ctx.llm
+        .listProviders()
+        .map((provider) => provider.id)
+        .filter((id) => id !== 'chatgpt-codex')
       if (ids.includes('deepseek-account')) return 'deepseek-account'
       if (ids.includes('deepseek-official')) return 'deepseek-official'
       return ids[0] || 'deepseek-official'
@@ -674,30 +716,29 @@ export function apply(ctx, config) {
 
   /** 请求守卫：回环 / Origin / Sec-Fetch-Site / Host / Content-Type / 局域网只读。 */
   const rejectReason = (req) => {
-    if (!isLoopback(req) && !allowLanAccess()) return '仅允许本机访问；如需局域网访问请在设置中开启 allowLanAccess。'
+    const loopback = isLoopback(req)
+    if (!loopback && !allowLanAccess()) return '仅允许本机访问；如需局域网访问请在设置中开启 allowLanAccess。'
     const origin = req.headers.origin
     const expected = expectedOrigin()
-    if (origin && expected && origin !== expected) return '跨站请求被拒绝。'
+    // 同源判断：接受 127.0.0.1 / localhost / [::1] 等本机别名，但拒绝外部域名。
+    if (origin && (!expected || !isSameOrigin(origin, expected))) return '跨站请求被拒绝。'
     const site = req.headers['sec-fetch-site']
     if (site && site !== 'same-origin' && site !== 'none') return '跨站请求被拒绝。'
     // Host 白名单不随 LAN 模式关闭：回环名或本机网卡地址，否则视为 DNS rebinding。
     const host = String(req.headers.host || '').toLowerCase()
     const hostname = host.replace(/:\d+$/, '').replace(/^\[|\]$/g, '')
-    if (host && !isAllowedHost(hostname)) return 'Host 不匹配。'
-    if (expected && host) {
-      try {
-        const expectedHost = new URL(expected).host.toLowerCase()
-        // LAN 访问时 Host 可能是本机网卡地址（已被 isAllowedHost 放行）。
-        if (host !== expectedHost && !(allowLanAccess() && !isLoopback(req))) return 'Host 不匹配。'
-      } catch {
-        // expected 不是合法 URL 时已由上面的白名单兜底
-      }
-    }
-    if (!isLoopback(req) && req.method !== 'GET') {
+    if (!hostname) return '缺少 Host，已拒绝。'
+    if (!isAllowedHost(hostname)) return 'Host 不匹配。'
+    if (!loopback && req.method !== 'GET') {
       return '局域网模式仅允许只读查询；登录/登出/兑换重置卡等操作请在运行 DSH 的本机执行。'
     }
-    if (req.method === 'POST' && !/^application\/json\b/i.test(String(req.headers['content-type'] || ''))) {
-      return 'POST 需要 application/json。'
+    if (req.method === 'POST') {
+      // 写操作必须带同源 Origin：浏览器同源 POST 一定带，缺失按跨站写入处理。
+      if (!origin) return '缺少 Origin，已拒绝跨站写入。'
+      if (!expected) return '无法确认本机 origin，已拒绝写入。'
+      if (!/^application\/json\b/i.test(String(req.headers['content-type'] || ''))) {
+        return 'POST 需要 application/json。'
+      }
     }
     return ''
   }
@@ -744,8 +785,9 @@ export function apply(ctx, config) {
     if (op === 'setGlobal') {
       const patch = body.patch && typeof body.patch === 'object' ? body.patch : {}
       const next = {}
-      if (typeof patch.defaultModel === 'string' && patch.defaultModel.trim()) {
-        next.defaultModel = patch.defaultModel.trim()
+      if (typeof patch.defaultModel === 'string') {
+        // 空字符串 = 「自动选择」：必须允许显式清空，否则选了自动也切不回默认策略。
+        next.defaultModel = patch.defaultModel.trim().slice(0, 200)
       }
       if (typeof patch.autoConsult === 'boolean') next.autoConsult = patch.autoConsult
       if (typeof patch.allowLanAccess === 'boolean') next.allowLanAccess = patch.allowLanAccess
@@ -763,6 +805,12 @@ export function apply(ctx, config) {
       await cancelLogin()
       authStore.clear()
       modelsCache = { at: 0, models: [], error: '' }
+      // 用量缓存也必须失效，否则卡片还会显示上一个账号的计划与限额。
+      try {
+        __resetUsageCache()
+      } catch {
+        // 缓存清理失败不影响登出
+      }
       return
     }
     if (op === 'listModels') {
@@ -870,6 +918,11 @@ export function apply(ctx, config) {
           return
         }
         if (url.searchParams.get('deepseekModels') === '1') {
+          // 局域网只读模式同样不返回模型目录，保持一致脱敏。
+          if (redacted) {
+            sendJson(res, 200, { ok: true, provider: '', models: [], error: 'lan-redacted' })
+            return
+          }
           try {
             const provider = deepseekProvider()
             const models = await ctx.llm.listModels(provider)
@@ -906,6 +959,12 @@ export function apply(ctx, config) {
         if (redacted) {
           snap.auth = { loggedIn: snap.auth.loggedIn, plan: snap.auth.plan, planLabel: snap.auth.planLabel }
           snap.session = null
+          // 配置细节（默认/委派模型、provider 目录）也不向局域网暴露。
+          snap.global = {
+            allowLanAccess: snap.global.allowLanAccess === true,
+            gptNameDetect: snap.global.gptNameDetect === true,
+          }
+          snap.llm = { providers: [], adapter: { registered: Boolean(snap.llm && snap.llm.adapter && snap.llm.adapter.registered), error: '' } }
         }
         sendJson(res, 200, snap)
         return
@@ -952,7 +1011,9 @@ export function apply(ctx, config) {
               fetchCodexModels({ accessToken: credential.accessToken, accountId: credential.accountId }),
             readImage: async (attachmentRef) => {
               const stored = await ctx.attachments.readImage(attachmentRef)
-              return { data: stored.data, mediaType: attachmentRef.mediaType }
+              // 以读取结果为准：ref 上不一定带 mediaType，否则会拼出 data:undefined;base64 并被静默丢图。
+              const mediaType = (stored && stored.mediaType) || (attachmentRef && attachmentRef.mediaType) || 'image/png'
+              return { data: stored.data, mediaType }
             },
           }),
         )

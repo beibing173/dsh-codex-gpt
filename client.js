@@ -191,6 +191,16 @@ window.__ModuleLoader__.load({
         void reload()
       }, [reload])
 
+      // 设置页保存后（如切换 gptNameDetect）窗口重新获得焦点时刷新一次，保证显示名跟上配置。
+      useEffect(() => {
+        if (typeof window === 'undefined' || typeof window.addEventListener !== 'function') return undefined
+        const refresh = () => {
+          void reload()
+        }
+        window.addEventListener('focus', refresh)
+        return () => window.removeEventListener('focus', refresh)
+      }, [reload])
+
       const enabled = Boolean(state.session && state.session.enabled === true)
       const loggedIn = Boolean(state.auth && state.auth.loggedIn === true)
       const unavailable = state.status === 'error' || state.status === 'unavailable'
@@ -457,8 +467,10 @@ window.__ModuleLoader__.load({
 
       const loadModels = useCallback(async (force) => {
         try {
-          const path = force ? API + '?models=1' : API + '?models=1'
-          const data = await request(path, { headers: { Accept: 'application/json' }, cache: 'no-store' })
+          // force 走 POST（服务端强制刷新，跳过 5 分钟缓存）；否则用 GET 的缓存路径。
+          const data = force
+            ? (await postOp({ op: 'listModels' })).result || {}
+            : await request(API + '?models=1', { headers: { Accept: 'application/json' }, cache: 'no-store' })
           setModels(Array.isArray(data.models) ? data.models : [])
           setModelsError(data.error || '')
         } catch (modelsFailure) {
@@ -562,9 +574,13 @@ window.__ModuleLoader__.load({
           if (!url) throw new Error('没有拿到 OpenAI 授权地址')
           setLoginUrl(url)
           if (typeof window !== 'undefined') {
-            const opened = window.open(url, '_blank', 'noopener')
-            if (!opened) setNotice('浏览器拦截了弹窗：点下方「点我复制授权链接」，粘贴到浏览器打开即可。')
-            else setNotice('已打开 OpenAI 登录页；完成授权后本页会自动更新。')
+            // noopener 会让 window.open 永远返回 null，不能据此判断是否被拦截。
+            try {
+              window.open(url, '_blank', 'noopener')
+            } catch {
+              // 被浏览器直接拒绝时走下面的复制兜底
+            }
+            setNotice('已尝试打开 OpenAI 登录页；若没有弹出，点下方「点我复制授权链接」。')
           }
           if (pollRef.current) clearInterval(pollRef.current)
           let attempts = 0
@@ -688,7 +704,24 @@ window.__ModuleLoader__.load({
         }
       }, [resetInfo, loadResets])
 
-      if (!auth) return h('div', { style: styles.hint }, 'ChatGPT 设置加载中…')
+      if (!auth) {
+        // 加载失败时必须把原因显示出来，否则页面会永远停在「加载中」。
+        return h(
+          'div',
+          { style: styles.card },
+          h('div', { style: styles.title }, ' ChatGPT 设置'),
+          error
+            ? h('div', { style: styles.error }, '加载失败：' + error)
+            : h('div', { style: styles.hint }, '加载中…'),
+          error
+            ? h(
+                'div',
+                { style: styles.row },
+                h('button', { type: 'button', style: styles.button, onClick: () => void loadAll() }, '重试'),
+              )
+            : null,
+        )
+      }
 
       const loggedIn = auth.loggedIn === true
       const untilDate = formatDate(auth.activeUntil)

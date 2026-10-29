@@ -4,7 +4,7 @@
 
 全程使用 **ChatGPT 订阅额度**，走 OpenAI 官方 OAuth 登录，不需要填写 API Key，不产生 OpenAI API 计费。
 
-![设置页：OpenAI 账号、Codex 设置、轻任务委派开关与重置卡](assets/screenshot-1.webp)
+![设置页：OpenAI 账号、ChatGPT 设置、轻任务委派开关与重置卡](assets/screenshot-1.webp)
 
 ---
 
@@ -21,7 +21,7 @@
 
 ### 2. `codex` 工具（DeepSeek 自主升级）
 
-- **会话级授权**：输入框左侧的「Codex」按钮控制当前会话；未授权会话绝不会调用 OpenAI。
+- **会话级授权**：输入框左侧的胶囊按钮控制当前会话（显示名随当前模型变化：本插件 ChatGPT 时显示「DeepSeek」，其余显示「ChatGPT」）；未授权会话绝不会调用 OpenAI。
 - 已授权会话中，DeepSeek 按任务强度决定是否调用 `codex` 工具；可在设置里关闭「自主调用」。
 - 两种模式：`analyze`（架构分析、疑难 bug 定位、方案评审、安全审计）与 `build`（直接产出可落地代码/补丁）。
 
@@ -52,7 +52,7 @@ DSH 中通过 **插件管理** 以本地 bundle 方式安装：
 
 ## 登录
 
-1. 打开 **设置 → Codex** → 点「登录 OpenAI 账号」；
+1. 打开 **设置 → ChatGPT** → 点「登录 OpenAI 账号」；
 2. 浏览器跳转 `auth.openai.com` 官方授权页，登录并同意；
 3. 回调本机 `http://localhost:1455/auth/callback` 完成授权（端口占用会明确提示）。
 
@@ -72,7 +72,7 @@ DSH 中通过 **插件管理** 以本地 bundle 方式安装：
 ### 方式 B：让 DeepSeek 自主调用 Codex
 
 1. 模型保持在 DeepSeek（V4.1）；
-2. 点输入框左侧 **Codex** 按钮授权当前会话；
+2. 点输入框左侧胶囊按钮授权当前会话；
 3. 遇到高难度任务时 DeepSeek 会调用 `codex` 工具，并在回答中说明所用模型与耗时。
 
 ---
@@ -87,6 +87,7 @@ DSH 中通过 **插件管理** 以本地 bundle 方式安装：
 | `autoConsult` | `true` | 允许模型自主按任务强度调用 `codex` 工具 |
 | `allowLanAccess` | `false` | 允许局域网设备**只读**查看插件状态（写操作始终仅限本机） |
 | `delegateLightTasks` | `false` | GPT 模式下允许把轻任务交给 DeepSeek V4.1 收尾（独立开关，可随时关闭） |
+| `gptNameDetect` | `false` | 保险开关：开启后其他 provider 的模型名形如 `gpt-*` / `o3-*` 也按 GPT 识别（影响胶囊显示名） |
 | `deepseekModel` | 空 | 轻任务委派使用的 DeepSeek 模型 id；留空自动选择当前可用模型 |
 
 持久化数据：
@@ -108,9 +109,9 @@ DSH 中通过 **插件管理** 以本地 bundle 方式安装：
 | `oauth.js` | OpenAI OAuth：PKCE、1455 回调服务器、token 交换/续期、凭证存储 |
 | `usage.js` | ChatGPT 订阅用量（`wham/usage`），插件凭证优先、兼容 Codex CLI |
 | `network.js` | 外网连通性检查 |
-| `client.js` | 浏览器侧：输入框 Codex 胶囊按钮、侧边栏用量卡片、设置页 |
+| `client.js` | 浏览器侧：输入框授权胶囊、侧边栏用量卡片、设置页 |
 | `cordis.patch.yml` | 插入主机行 `id: dsh-codex-gpt` |
-| `test/` | `node --test` 单测（57 条，含安全回归） |
+| `test/` | `node --test` 单测（63 条，含安全回归） |
 
 数据流（方式 A）：
 

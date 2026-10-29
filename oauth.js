@@ -238,12 +238,13 @@ export async function refreshTokens(refreshToken) {
 /** 刷新单飞：并发调用共用一次 refresh，避免 refresh_token 互相作废。 */
 let inflightRefresh = null
 
-/** 确保拿到可用 access_token（过期前 60 秒自动刷新并写回）。 */
-export async function ensureAccessToken(store) {
+/** 确保拿到可用 access_token（过期前 60 秒自动刷新并写回；force 强制刷新）。 */
+export async function ensureAccessToken(store, options = {}) {
   const record = store.read()
   const credential = describeCredential(record)
   if (!credential) return undefined
-  if (credential.expiresAt - Date.now() > 60_000) return credential
+  const force = options && options.force === true
+  if (!force && credential.expiresAt - Date.now() > 60_000) return credential
   if (!credential.refreshToken) return credential
   try {
     if (!inflightRefresh) {
@@ -252,11 +253,20 @@ export async function ensureAccessToken(store) {
       })
     }
     const tokens = await inflightRefresh
+    // 刷新期间可能已完成一次新的登录/登出：缓存对象身份变了就丢弃本次刷新结果，
+    // 否则会用旧账号的 token 覆盖刚写入的新凭证。
+    const current = store.read()
+    if (current !== record) {
+      const replaced = describeCredential(current)
+      if (replaced) return replaced
+      return undefined
+    }
     const next = buildAuthRecord(tokens, record)
     store.save(next)
     return describeCredential(next)
-  } catch {
-    // 刷新失败：继续用旧 token，真正失败会在调用处暴露
+  } catch (error) {
+    // 刷新失败：继续用旧 token，真正失败会在调用处暴露；但必须留下日志便于排查。
+    console.warn('[dsh-codex] 刷新 token 失败，继续使用旧凭证：', error instanceof Error ? error.message : error)
     return credential
   }
 }
@@ -300,11 +310,15 @@ h1{margin:0 0 10px;font-size:22px}p{margin:0;opacity:.75;font-size:14px;line-hei
 /** 当前挂起的登录流程（同一时间只允许一个）。 */
 let pending = null
 
-/** 取消挂起的登录（关闭回调服务器）。 */
+/** 取消挂起的登录（关闭回调服务器并清掉超时定时器）。 */
 export async function cancelLogin() {
   if (!pending) return
   const current = pending
   pending = null
+  if (typeof current.finish === 'function') {
+    current.finish({ ok: false, reason: 'cancelled' })
+    return
+  }
   try {
     current.server.close()
   } catch {
@@ -359,13 +373,18 @@ export async function beginLogin({ store }) {
     const error = requestUrl.searchParams.get('error')
     const code = requestUrl.searchParams.get('code')
     const returnedState = requestUrl.searchParams.get('state')
+    // 先校验 state 再看 error：否则任意页面打开 ?error=x 就能终止用户正在进行的登录。
+    if (returnedState !== state) {
+      respondHtml(res, 400, '登录校验失败', 'state 不匹配，已忽略这次回调；请重新发起登录。')
+      return
+    }
     if (error) {
       respondHtml(res, 400, '登录没有完成', `OpenAI 返回：${error}`)
       finish({ ok: false, reason: error })
       return
     }
-    if (!code || returnedState !== state) {
-      respondHtml(res, 400, '登录校验失败', 'state 不匹配或缺少授权码，请重新发起登录。')
+    if (!code) {
+      respondHtml(res, 400, '登录校验失败', '缺少授权码，请重新发起登录。')
       finish({ ok: false, reason: 'state-mismatch' })
       return
     }
@@ -401,6 +420,6 @@ export async function beginLogin({ store }) {
   })
 
   const timer = setTimeout(() => finish({ ok: false, reason: 'timeout' }), LOGIN_TTL_MS)
-  pending = { server, settle }
+  pending = { server, settle, finish }
   return { url, completed }
 }
