@@ -55,8 +55,10 @@ jobs:
             TAG="${{ github.ref_name }}"
           fi
           # 手动触发且没给 tag 时，退到最近一个 v* tag，方便补发。
+          # 用 awk 取第一行而非 `| head -n1`：pipefail 下 head 提前关闭管道
+          # 会让上游收到 SIGPIPE（141）并被判为失败。
           if [ -z "$TAG" ] || [ "$TAG" = "master" ] || [ "$TAG" = "main" ]; then
-            TAG=$(git tag --list 'v*' --sort=-v:refname | head -n1)
+            TAG=$(git tag --list 'v*' --sort=-v:refname | awk 'NR == 1 { print; exit }')
             echo "未指定 tag，回退到最近的 tag: ${TAG:-<无>}"
           fi
           if [ -z "$TAG" ]; then
@@ -119,16 +121,22 @@ jobs:
 
             # 首个版本没有上一个 tag 可比时，自动生成只剩一行 "Full Changelog"，
             # 正文会空得没法读。这种情况补一份提交清单。
+            #
+            # ⚠️ 这里用 --max-count 而不是 `| head -n N`。
+            # `set -o pipefail` 下，head 读够就关闭管道，git 端收到 SIGPIPE
+            # 退出 141，pipefail 会把这个 141 当成整条命令失败——提交少的仓库
+            # 恰好躲得过（输出一次写完），提交多的仓库必炸。--max-count 让 git
+            # 自己限制输出条数，不产生管道截断。
             BODY_LINES=$(grep -cve '^[[:space:]]*$' "$NOTES" || true)
             if [ "$BODY_LINES" -lt 3 ]; then
               echo "自动生成内容过少，补充提交清单"
               {
                 printf '## 本版提交\n\n'
-                PREV=$(git tag --list 'v*' --sort=-v:refname | grep -v "^${TAG}$" | head -n1 || true)
+                PREV=$(git tag --list 'v*' --sort=-v:refname | awk -v t="$TAG" '$0 != t { print; exit }')
                 if [ -n "$PREV" ]; then
-                  git log --no-merges --pretty='- %s (%h)' "${PREV}..${TAG}"
+                  git log --no-merges --max-count=50 --pretty='- %s (%h)' "${PREV}..${TAG}"
                 else
-                  git log --no-merges --pretty='- %s (%h)' "$TAG" | head -n 30
+                  git log --no-merges --max-count=50 --pretty='- %s (%h)' "$TAG"
                 fi
                 printf '\n**完整变更**：%s/commits/%s\n' \
                   "${{ github.server_url }}/${{ github.repository }}" "$TAG"
