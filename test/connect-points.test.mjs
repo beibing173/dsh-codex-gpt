@@ -60,6 +60,7 @@ test('Trae：剩余取 credits.available，累计 total 只作说明', () => {
   const points = parse('trae', doc)
   assert.equal(points.total, 0, '剩余积分为 0 时不能显示成总量 1450')
   assert.match(points.sub, /1450/)
+  assert.match(points.sub, /已用 1450/, 'Trae 给了 consumed，应显示已用量')
   assert.match(points.checkin, /签到/)
 })
 

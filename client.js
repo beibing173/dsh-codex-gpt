@@ -547,11 +547,16 @@ window.__ModuleLoader__.load({
           num(credits.available) ?? ((num(credits.workAvailable) || 0) + (num(credits.generalAvailable) || 0))
         if (available === null) return null
         const total = num(credits.total)
+        const consumed = num(credits.consumed)
+        // Trae 是唯一给了「累计发放 / 已消耗」的：一起显示，剩余仍然是大数字。
+        const parts = []
+        if (total !== null) parts.push(`累计 ${total}`)
+        if (consumed !== null) parts.push(`已用 ${consumed}`)
         return {
           id,
           label: 'Trae',
           total: available,
-          sub: total !== null ? `累计 ${total}` : '',
+          sub: parts.join(' · '),
           checkin: doc.checkin && doc.checkin.checkedIn ? '今日已签到' : '',
         }
       }
