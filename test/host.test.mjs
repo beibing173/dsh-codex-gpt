@@ -758,12 +758,10 @@ test('登录后把 OAuth 令牌同步到用量类插件的凭证引用', async (
     },
   }
   const harness = createHarness({}, { credentials })
-  const adapter = harness.adapter()
-  assert.ok(adapter, '适配器应已注册')
 
-  // 适配器列模型时会取一次凭证 → 顺带触发同步。
-  await adapter.listModels('openai-codex')
-  await new Promise((resolve) => setTimeout(resolve, 20))
+  // 读一次快照就会触发（节流后的）同步。
+  await callApi(harness, {})
+  await new Promise((resolve) => setTimeout(resolve, 30))
 
   const tokenWrite = writes.find((item) => item.ref === 'DSH_USAGE_CODEX_OAUTH_TOKEN')
   const accountWrite = writes.find((item) => item.ref === 'DSH_USAGE_CODEX_ACCOUNT_ID')
@@ -775,11 +773,11 @@ test('登录后把 OAuth 令牌同步到用量类插件的凭证引用', async (
   assert.equal(json.usageSync.ok, true)
   assert.equal(JSON.stringify(json).includes(record.tokens.access_token), false)
 
-  // 同一个令牌不重复写（避免每次请求都触发凭证变更事件）。
+  // 高频路径（模型列表）绝不能写凭证：那会让 DSH 反复重拉模型目录（界面狂闪）。
   const before = writes.length
   await harness.adapter().listModels('openai-codex')
   await new Promise((resolve) => setTimeout(resolve, 20))
-  assert.equal(writes.length, before, '令牌未变时不应重复写入')
+  assert.equal(writes.length, before, '模型列表不应触发凭证写入')
 
   clearAuth()
 })

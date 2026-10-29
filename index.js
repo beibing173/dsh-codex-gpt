@@ -440,8 +440,11 @@ export function apply(ctx, config) {
    */
   const USAGE_TOKEN_REF = 'DSH_USAGE_CODEX_OAUTH_TOKEN'
   const USAGE_ACCOUNT_REF = 'DSH_USAGE_CODEX_ACCOUNT_ID'
-  let usageSyncStatus = { ok: null, at: 0, error: '' }
+  /** 同步节流：写凭证会让 DSH 视为「凭证变了」而重拉模型目录，太频繁会一直闪。 */
+  const USAGE_SYNC_THROTTLE_MS = 60_000
+  let usageSyncStatus = { ok: null, at: 0, error: '', attempts: 0 }
   let lastSyncedUsageKey = ''
+  let usageSyncTriedAt = 0
 
   const syncUsageCredential = async (credential) => {
     try {
@@ -451,12 +454,35 @@ export function apply(ctx, config) {
       if (key === lastSyncedUsageKey) return
       const credentials = ctx.get('credentials')
       if (!credentials || typeof credentials.set !== 'function') return
+      usageSyncStatus = { ...usageSyncStatus, attempts: usageSyncStatus.attempts + 1 }
       await credentials.set(USAGE_TOKEN_REF, accessToken)
       if (credential.accountId) await credentials.set(USAGE_ACCOUNT_REF, credential.accountId)
       lastSyncedUsageKey = key
-      usageSyncStatus = { ok: true, at: Date.now(), error: '' }
+      usageSyncStatus = { ok: true, at: Date.now(), error: '', attempts: usageSyncStatus.attempts }
     } catch (error) {
-      usageSyncStatus = { ok: false, at: Date.now(), error: error instanceof Error ? error.message : String(error) }
+      usageSyncStatus = {
+        ok: false,
+        at: Date.now(),
+        error: error instanceof Error ? error.message : String(error),
+        attempts: usageSyncStatus.attempts,
+      }
+    }
+  }
+
+  /**
+   * 节流版同步：只在读取快照/激活时偶尔试一次。
+   * 绝不在模型列表这种高频路径上写凭证——那会触发 DSH 的凭证变更事件，
+   * 进而重拉模型目录，形成「一闪一闪」的刷新风暴。
+   */
+  const maybeSyncUsage = async () => {
+    const at = Date.now()
+    if (at - usageSyncTriedAt < USAGE_SYNC_THROTTLE_MS) return
+    usageSyncTriedAt = at
+    try {
+      const credential = await ensureAccessToken(authStore, { noRefresh: true })
+      if (credential && credential.accessToken) await syncUsageCredential(credential)
+    } catch {
+      // 同步失败只影响用量卡
     }
   }
 
@@ -841,6 +867,8 @@ export function apply(ctx, config) {
   }
 
   const snapshot = (sessionId, credential) => {
+    // 读快照是低频动作（设置页/胶囊轮询），在这里节流补一次令牌同步，不额外起定时器。
+    void maybeSyncUsage()
     const auth = authSnapshot(credential)
     let llmProviders = []
     try {
@@ -1066,7 +1094,12 @@ export function apply(ctx, config) {
           // 本机页面才拿得到写操作令牌；局域网只读与跨站请求都拿不到。
           snap.writeToken = WRITE_TOKEN
           // 诊断：令牌是否已同步给用量类插件（不暴露令牌本身）。
-          snap.usageSync = { ok: usageSyncStatus.ok, at: usageSyncStatus.at, error: usageSyncStatus.error }
+          snap.usageSync = {
+            ok: usageSyncStatus.ok,
+            at: usageSyncStatus.at,
+            error: usageSyncStatus.error,
+            attempts: usageSyncStatus.attempts,
+          }
         }
         sendJson(res, 200, snap)
         return
@@ -1106,9 +1139,8 @@ export function apply(ctx, config) {
           [PROVIDER_ID, ...LEGACY_PROVIDER_IDS],
           createCodexGptAdapter({
             getCredential: async (options) => {
+              // 注意：这里在模型列表的高频路径上，绝不做凭证写入（会触发刷新风暴）。
               const credential = await ensureAccessToken(authStore, options || {})
-              // 登录/刷新拿到新令牌后，顺手同步给用量类插件（失败静默）。
-              if (credential && credential.accessToken) void syncUsageCredential(credential)
               return credential
                 ? { accessToken: credential.accessToken, accountId: credential.accountId }
                 : undefined
@@ -1154,10 +1186,7 @@ export function apply(ctx, config) {
   try {
     ctx.effect(() => {
       const timer = setTimeout(() => {
-        Promise.resolve()
-          .then(() => ensureAccessToken(authStore, { noRefresh: true }))
-          .then((credential) => (credential && credential.accessToken ? syncUsageCredential(credential) : null))
-          .catch(() => {})
+        void maybeSyncUsage()
       }, 1200)
       if (timer && typeof timer.unref === 'function') timer.unref()
       return () => clearTimeout(timer)
