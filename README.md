@@ -18,6 +18,8 @@
 - 支持**思考强度**：`Off / Low / High / Max`，默认 `High`，内部映射到 Codex 的 `reasoning.effort`（`Max → xhigh`，`Off → 不发送 reasoning`）。
 - 支持**图片输入**：贴图直接发给 GPT（经 `ctx.attachments.readImage` 读取并编码为 `input_image`）。
 - 模型列表带 5 分钟缓存，并对 HTTP 429 限流自动回退，不会污染界面。
+- 模型目录**落盘缓存**（`$DSH_HOME/dsh-codex-models.json`）：插件刚启动、上游还没返回时也先给上次的完整目录，并把已配置模型始终并进列表——不会出现「模型先消失、要手动重选」。刷新只在后台进行。
+- 登录/刷新拿到的 OAuth 令牌会**自动同步**到 `DSH_USAGE_CODEX_OAUTH_TOKEN` / `DSH_USAGE_CODEX_ACCOUNT_ID` 两个凭证引用，`@dougen/dsh-deepseek-usage` 这类用量插件不必再手填令牌（同步失败只影响那张卡，不影响对话）。
 - **GPT 模式轻任务委派（独立开关）**：开启后，ChatGPT 处理会话时会把格式化、整理、检索归纳、润色等轻任务交给 **DeepSeek V4.1** 完成并收尾，复杂任务仍由 GPT 直接处理；随时可关。
 
 ### 2. `codex` 工具（DeepSeek 自主升级）
@@ -112,7 +114,7 @@ DSH 中通过 **插件管理** 以本地 bundle 方式安装：
 | `network.js` | 外网连通性检查 |
 | `client.js` | 浏览器侧：输入框授权胶囊、侧边栏用量卡片、设置页 |
 | `cordis.patch.yml` | 插入主机行 `id: dsh-codex-gpt` |
-| `test/` | `node --test` 单测（72 条，含安全回归） |
+| `test/` | `node --test` 单测（73 条，含安全回归） |
 
 数据流（方式 A）：
 

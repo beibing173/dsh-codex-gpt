@@ -105,13 +105,14 @@ after(() => {
 })
 
 /** 最小 Context + 注册物收集。 */
-function createHarness(initialConfig = {}) {
+function createHarness(initialConfig = {}, extraServices = {}) {
   const config = { ...initialConfig }
   const tools = []
   const sections = []
   const routes = []
   const effects = []
   const settingsUpdates = []
+  let capturedAdapter = null
   const settings = {
     async update(ns, patch) {
       settingsUpdates.push({ ns, patch })
@@ -121,6 +122,7 @@ function createHarness(initialConfig = {}) {
   const ctx = {
     get(name) {
       if (name === 'settings') return settings
+      if (Object.prototype.hasOwnProperty.call(extraServices, name)) return extraServices[name]
       return undefined
     },
     webServer: {
@@ -145,7 +147,8 @@ function createHarness(initialConfig = {}) {
       },
     },
     llm: {
-      registerAdapter() {
+      registerAdapter(providers, adapter) {
+        capturedAdapter = adapter
         const handle = () => {}
         handle.replace = () => {}
         return handle
@@ -201,7 +204,7 @@ function createHarness(initialConfig = {}) {
     },
   }
   pluginModule.apply(ctx, config)
-  return { config, ctx, tools, sections, routes, effects, settingsUpdates }
+  return { config, ctx, tools, sections, routes, effects, settingsUpdates, adapter: () => capturedAdapter }
 }
 
 function makeRequest({ method = 'GET', url = '/dsh-codex-api', body, remoteAddress = '127.0.0.1', headers } = {}) {
@@ -736,4 +739,47 @@ test('提示段按登录/授权状态切换文案', async () => {
 
   assert.equal(section.text({}), '')
   assert.equal(section.text(undefined), '')
+})
+
+test('登录后把 OAuth 令牌同步到用量类插件的凭证引用', async (t) => {
+  const original = globalThis.fetch
+  t.after(() => {
+    globalThis.fetch = original
+  })
+  globalThis.fetch = mockBackend()
+
+  clearAuth()
+  const record = makeAuthRecord()
+  writeAuth(record)
+  const writes = []
+  const credentials = {
+    async set(ref, value) {
+      writes.push({ ref, value })
+    },
+  }
+  const harness = createHarness({}, { credentials })
+  const adapter = harness.adapter()
+  assert.ok(adapter, '适配器应已注册')
+
+  // 适配器列模型时会取一次凭证 → 顺带触发同步。
+  await adapter.listModels('openai-codex')
+  await new Promise((resolve) => setTimeout(resolve, 20))
+
+  const tokenWrite = writes.find((item) => item.ref === 'DSH_USAGE_CODEX_OAUTH_TOKEN')
+  const accountWrite = writes.find((item) => item.ref === 'DSH_USAGE_CODEX_ACCOUNT_ID')
+  assert.equal(tokenWrite && tokenWrite.value, record.tokens.access_token)
+  assert.equal(accountWrite && accountWrite.value, 'acc-1')
+
+  // 快照只暴露「同步成功与否」，不能带出令牌本身。
+  const { json } = await callApi(harness, {})
+  assert.equal(json.usageSync.ok, true)
+  assert.equal(JSON.stringify(json).includes(record.tokens.access_token), false)
+
+  // 同一个令牌不重复写（避免每次请求都触发凭证变更事件）。
+  const before = writes.length
+  await harness.adapter().listModels('openai-codex')
+  await new Promise((resolve) => setTimeout(resolve, 20))
+  assert.equal(writes.length, before, '令牌未变时不应重复写入')
+
+  clearAuth()
 })

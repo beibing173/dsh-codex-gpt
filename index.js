@@ -427,6 +427,40 @@ export function apply(ctx, config) {
   /** LLM 适配器注册状态（诊断用，展示在状态路由里）。 */
   let llmAdapterStatus = { registered: false, error: '尚未注册', directory: { registered: false, error: '尚未注册' } }
 
+  /**
+   * 把 ChatGPT 的 OAuth 令牌同步到「用量类插件」读的那两个凭证引用。
+   *
+   * @dougen/dsh-deepseek-usage 这类插件按 provider id `openai-codex` 找账户接口，
+   * 令牌只从自己的引用 `DSH_USAGE_CODEX_OAUTH_TOKEN` / `..._ACCOUNT_ID` 读。
+   * 本插件的令牌存在自己的 $DSH_HOME/dsh-codex-auth.json 里，两边不通，于是它只能
+   * 显示「尚未填写该提供商的 OAuth 令牌」。这里在登录/刷新后写一次同一个引用，
+   * 让那张用量卡自己就能读到（写入经 DSH 的 credentials 服务，格式与它自己写入的一致）。
+   *
+   * 失败一律静默：同步不上只是那张卡不显示数字，绝不影响对话。
+   */
+  const USAGE_TOKEN_REF = 'DSH_USAGE_CODEX_OAUTH_TOKEN'
+  const USAGE_ACCOUNT_REF = 'DSH_USAGE_CODEX_ACCOUNT_ID'
+  let usageSyncStatus = { ok: null, at: 0, error: '' }
+  let lastSyncedUsageKey = ''
+
+  const syncUsageCredential = async (credential) => {
+    try {
+      const accessToken = credential && credential.accessToken
+      if (!accessToken) return
+      const key = `${accessToken}\u0000${credential.accountId || ''}`
+      if (key === lastSyncedUsageKey) return
+      const credentials = ctx.get('credentials')
+      if (!credentials || typeof credentials.set !== 'function') return
+      await credentials.set(USAGE_TOKEN_REF, accessToken)
+      if (credential.accountId) await credentials.set(USAGE_ACCOUNT_REF, credential.accountId)
+      lastSyncedUsageKey = key
+      usageSyncStatus = { ok: true, at: Date.now(), error: '' }
+    } catch (error) {
+      usageSyncStatus = { ok: false, at: Date.now(), error: error instanceof Error ? error.message : String(error) }
+    }
+  }
+
+
   /** 拉一次模型目录（单飞）；并发调用共用同一次上游请求。 */
   const refreshModels = async (credential) => {
     if (inflightModels) return inflightModels
@@ -1031,6 +1065,8 @@ export function apply(ctx, config) {
         } else {
           // 本机页面才拿得到写操作令牌；局域网只读与跨站请求都拿不到。
           snap.writeToken = WRITE_TOKEN
+          // 诊断：令牌是否已同步给用量类插件（不暴露令牌本身）。
+          snap.usageSync = { ok: usageSyncStatus.ok, at: usageSyncStatus.at, error: usageSyncStatus.error }
         }
         sendJson(res, 200, snap)
         return
@@ -1071,6 +1107,8 @@ export function apply(ctx, config) {
           createCodexGptAdapter({
             getCredential: async (options) => {
               const credential = await ensureAccessToken(authStore, options || {})
+              // 登录/刷新拿到新令牌后，顺手同步给用量类插件（失败静默）。
+              if (credential && credential.accessToken) void syncUsageCredential(credential)
               return credential
                 ? { accessToken: credential.accessToken, accountId: credential.accountId }
                 : undefined
@@ -1110,6 +1148,22 @@ export function apply(ctx, config) {
     }, 'dsh-codex-gpt: ChatGPT LLM 适配器')
   } catch (error) {
     warn('LLM 适配器注册失败（模型列表里不会出现 ChatGPT）', error)
+  }
+
+  // ── 5b. 已登录时把 OAuth 令牌同步给用量类插件（激活后一次，失败静默） ──────
+  try {
+    ctx.effect(() => {
+      const timer = setTimeout(() => {
+        Promise.resolve()
+          .then(() => ensureAccessToken(authStore, { noRefresh: true }))
+          .then((credential) => (credential && credential.accessToken ? syncUsageCredential(credential) : null))
+          .catch(() => {})
+      }, 1200)
+      if (timer && typeof timer.unref === 'function') timer.unref()
+      return () => clearTimeout(timer)
+    }, 'dsh-codex-gpt: 同步 ChatGPT 用量令牌')
+  } catch (error) {
+    warn('用量令牌同步初始化失败（只影响用量卡显示）', error)
   }
 
   // ── 6. 设置页 provider 目录：让「设置 → 模型」里出现 ChatGPT ──────────────
