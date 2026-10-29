@@ -303,7 +303,12 @@ export function __resetUsageCache() {
  */
 export async function getCodexUsage(options = {}) {
   const now = Date.now()
-  if (cache && cache.expiresAt > now) return cache.value
+  // 缓存按账号隔离：换号后不会继续显示上一个账号的计划与限额。
+  const injectedCredential = options.credential
+  const cacheKey = injectedCredential
+    ? `plugin:${injectedCredential.accountId || ''}:${String(injectedCredential.accessToken || '').slice(-8)}`
+    : 'cli'
+  if (cache && cache.key === cacheKey && cache.expiresAt > now) return cache.value
   const env = options.env || {}
   const signal = options.signal
   const injected = options.credential
@@ -378,6 +383,6 @@ export async function getCodexUsage(options = {}) {
     }
   }
 
-  cache = { value, expiresAt: now + (value.available ? USAGE_TTL_MS : FAILURE_TTL_MS) }
+  cache = { key: cacheKey, value, expiresAt: now + (value.available ? USAGE_TTL_MS : FAILURE_TTL_MS) }
   return value
 }

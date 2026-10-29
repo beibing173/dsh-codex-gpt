@@ -539,7 +539,8 @@ export function createCodexGptAdapter(opts) {
 
     await cancelBody(response)
     throwIfAborted(signal)
-    credential = await getCredential()
+    // 401 时 token 往往还没到过期时间，必须强制刷新，否则重试仍是同一个失效 token。
+    credential = await getCredential({ force: true })
     throwIfAborted(signal)
     if (!credential?.accessToken) throw createCodedError('ChatGPT 凭证刷新失败', 'CREDENTIAL_REFRESH_FAILED')
     return sendRequest(options, credential, signal)

@@ -140,6 +140,7 @@ node --test "test/codex.test.mjs" "test/usage.test.mjs" "test/host.test.mjs" "te
 - 状态路由 `/dsh-codex-api` 默认**仅接受本机回环地址**，并校验 `Origin`、`Sec-Fetch-Site`、`Host` 与 `Content-Type: application/json`；
 - 同源判断兼容 `127.0.0.1` / `localhost` / `[::1]` 等本机别名（协议与端口需一致），外部域名伪造 `Origin` 一律拒绝；
 - 写操作（授权、登录、登出、兑换重置卡、改配置）**必须携带同源 `Origin`**；缺失 `Origin` 或无法确定本机 origin 时直接拒绝；
+- 写操作还必须携带**进程级随机令牌** `x-dsh-write-token`：令牌只随同源 GET 快照下发给本机页面，跨站页面读不到响应体因此拿不到，代理场景下也无法伪造写操作；
 - 请求若携带 `X-Forwarded-For` / `X-Real-IP` / `Forwarded` / `CF-Connecting-IP`，一律按**远程**处理，不再享受本机权限；
 - `Host` 校验不依赖 `getOrigin()` 是否可用：即使端口来源信息缺失，非回环 Host 也会被拒绝（防 DNS rebinding）；
 - `allowLanAccess: true` 时局域网设备**只能只读查询**；登录、登出、兑换重置卡等写操作必须在运行 DSH 的本机执行；
@@ -156,14 +157,10 @@ node --test "test/codex.test.mjs" "test/usage.test.mjs" "test/host.test.mjs" "te
 
 - 依赖 ChatGPT 后端的若干**非公开接口**（`codex/responses`、`codex/models`、`wham/usage`、`wham/rate-limit-reset-credits`），OpenAI 调整协议时可能需要适配；
 - `codex` 工具与模型列表均受账号订阅额度约束，额度用尽需等待重置周期或使用重置卡；
-- OAuth 回调固定占用本机 `1455` 端口，且只监听 `127.0.0.1`；若浏览器把 `localhost` 解析到 `::1`，回调可能连不上，请改用 `127.0.0.1` 打开回调地址；
-- **不要在 DSH 前面挂反向代理**：`socket.remoteAddress` 会被统一识别为本机，本机隔离会被弱化（本插件已对转发头做降级处理，但根本方案是仅本机暴露）；
-- 用量缓存未按账号隔离：登出会清缓存，但**切换账号后 60 秒内**卡片仍可能显示上一账号的限额；
-- token 刷新为单飞，但请求收到 `401` 时不会强制刷新（凭证被服务端提前失效时需重新登录）；
-- 模型目录与用量请求未做单飞，并发触发时可能重复请求上游；
+- OAuth 回调固定占用本机 `1455` 端口（同时尝试监听 `127.0.0.1` 与 `::1`；系统禁用 IPv6 时自动只保留 IPv4）；
+- **不建议在 DSH 前面挂反向代理**：虽然写操作有随机令牌保护、转发头也会降级为远程，但只读快照仍可能暴露给代理后的访问者，最稳妥的做法仍是仅本机暴露；
 - 多个 DSH 实例共享同一个 `$DSH_HOME` 时，会话授权状态是整文件覆写，可能互相覆盖；
-- 浏览器侧 UI 文案目前硬编码中文，未接入 `ctx.locale` 本地化；
-- 少量无障碍细节不完整（开关无键盘操作、部分可点击元素缺少按钮语义）。
+- 浏览器侧 UI 文案目前硬编码中文，未接入 `ctx.locale` 本地化。
 
 ---
 

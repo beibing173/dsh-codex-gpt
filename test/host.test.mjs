@@ -234,10 +234,33 @@ function makeResponse() {
   }
 }
 
+let cachedWriteToken = ''
+
+/** 先 GET 一次拿到写操作令牌（真实浏览器也是先加载快照再点按钮）。 */
+async function fetchWriteToken(harness) {
+  if (cachedWriteToken) return cachedWriteToken
+  const res = makeResponse()
+  await harness.routes[0].handler(makeRequest({}), res)
+  try {
+    cachedWriteToken = (JSON.parse(res.body) || {}).writeToken || ''
+  } catch {
+    cachedWriteToken = ''
+  }
+  return cachedWriteToken
+}
+
 async function callApi(harness, options = {}) {
   const route = harness.routes[0]
   assert.ok(route, '状态路由未注册')
-  const req = makeRequest(options)
+  const method = options.method || 'GET'
+  const merged =
+    method === 'POST'
+      ? {
+          ...options,
+          headers: { 'x-dsh-write-token': await fetchWriteToken(harness), ...(options.headers || {}) },
+        }
+      : options
+  const req = makeRequest(merged)
   const res = makeResponse()
   await route.handler(req, res)
   return { status: res.statusCode, json: res.body ? JSON.parse(res.body) : undefined }
@@ -488,6 +511,29 @@ test('写操作缺少 Origin 时按跨站拒绝', async () => {
   })
   assert.equal(status, 403)
   assert.match(json.error, /Origin/)
+})
+
+test('写操作缺少本机令牌时拒绝，且令牌只在非脱敏快照下发', async () => {
+  writeAuth()
+  const harness = createHarness()
+  const ok = await callApi(harness, { method: 'POST', body: { op: 'setGlobal', patch: { autoConsult: true } } })
+  assert.equal(ok.status, 200)
+  assert.equal(typeof ok.json.writeToken, 'string')
+  assert.ok(ok.json.writeToken.length > 0)
+
+  const withoutToken = await callApi(harness, {
+    method: 'POST',
+    headers: { 'x-dsh-write-token': '' },
+    body: { op: 'setGlobal', patch: { autoConsult: false } },
+  })
+  assert.equal(withoutToken.status, 403)
+  assert.match(withoutToken.json.error, /令牌/)
+
+  // 局域网脱敏快照不得下发令牌
+  await callApi(harness, { method: 'POST', body: { op: 'setGlobal', patch: { allowLanAccess: true } } })
+  const lan = await callApi(harness, { remoteAddress: '192.168.1.9' })
+  assert.equal(lan.status, 200)
+  assert.equal(lan.json.writeToken, undefined)
 })
 
 test('局域网模式：只读放行，登录/兑换等写操作拒绝', async () => {

@@ -354,11 +354,18 @@ export async function beginLogin({ store }) {
     } catch {
       // 已关闭
     }
+    for (const extra of extraServers) {
+      try {
+        extra.close()
+      } catch {
+        // 已关闭
+      }
+    }
     if (pending && pending.server === server) pending = null
     settle(result)
   }
 
-  const server = createServer(async (req, res) => {
+  const onRequest = async (req, res) => {
     let requestUrl
     try {
       requestUrl = new URL(String(req.url || '/'), `http://localhost:${REDIRECT_PORT}`)
@@ -399,7 +406,11 @@ export async function beginLogin({ store }) {
       respondHtml(res, 500, '登录失败', message)
       finish({ ok: false, reason: message })
     }
-  })
+  }
+
+  const server = createServer(onRequest)
+  /** 额外监听的地址（IPv6 回环）：浏览器把 localhost 解析成 ::1 时也能回调。 */
+  const extraServers = []
 
   await new Promise((resolve, reject) => {
     const onError = (error) => {
@@ -417,6 +428,27 @@ export async function beginLogin({ store }) {
     server.once('error', onError)
     server.once('listening', onListening)
     server.listen(REDIRECT_PORT, '127.0.0.1')
+  })
+
+  // 顺带尝试监听 IPv6 回环；失败（系统禁用 IPv6 / 端口冲突）不影响主流程。
+  await new Promise((resolve) => {
+    try {
+      const server6 = createServer(onRequest)
+      server6.once('error', () => {
+        try {
+          server6.close()
+        } catch {
+          // 已关闭
+        }
+        resolve()
+      })
+      server6.listen(REDIRECT_PORT, '::1', () => {
+        extraServers.push(server6)
+        resolve()
+      })
+    } catch {
+      resolve()
+    }
   })
 
   const timer = setTimeout(() => finish({ ok: false, reason: 'timeout' }), LOGIN_TTL_MS)

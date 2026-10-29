@@ -15,6 +15,7 @@ import z from '@deepseek-ai/schemastery'
 import { readFileSync, writeFileSync, mkdirSync, renameSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { homedir, networkInterfaces } from 'node:os'
+import { randomBytes } from 'node:crypto'
 import { callCodexBackend, fetchCodexModels, fetchResetCredits, consumeResetCredit } from './codex.js'
 import { getCodexUsage, __resetUsageCache } from './usage.js'
 import { checkConnectivity } from './network.js'
@@ -30,6 +31,12 @@ export const ENTRY_ID = 'dsh-codex-gpt'
 export const inject = ['tools', 'systemPrompt', 'webServer', 'llm', 'attachments']
 
 export const ROUTE = '/dsh-codex-api'
+/**
+ * 写操作令牌：进程级随机值，只通过同源 GET 快照发给本机页面。
+ * 跨站页面能发出请求但读不到响应体，因此拿不到令牌，写操作无法伪造——
+ * 这也是反向代理场景下 socket 地址失去意义后的兜底防线。
+ */
+const WRITE_TOKEN = randomBytes(16).toString('hex')
 /** 单次 Codex 调用超时（毫秒）。 */
 const CODEX_TIMEOUT_MS = 240_000
 /** codex 工具入参上限：防止超大文本导致上游费用与内存问题。 */
@@ -382,6 +389,8 @@ export function apply(ctx, config) {
 
   /** 模型列表缓存（OAuth 登录后从 OpenAI 拉取）。 */
   let modelsCache = { at: 0, models: [], error: '' }
+  /** 模型列表单飞：并发刷新共用一次上游请求。 */
+  let inflightModels = null
   /** LLM 适配器注册状态（诊断用，展示在状态路由里）。 */
   let llmAdapterStatus = { registered: false, error: '尚未注册', directory: { registered: false, error: '尚未注册' } }
 
@@ -390,17 +399,26 @@ export function apply(ctx, config) {
     if (!force && modelsCache.at > 0 && Date.now() - modelsCache.at < MODELS_TTL_MS) {
       return { models: modelsCache.models, error: modelsCache.error }
     }
+    // 并发（设置页刷新 + 卡片轮询）只打一次上游。
+    if (inflightModels) return inflightModels
+    inflightModels = (async () => {
+      try {
+        const models = await fetchCodexModels({
+          accessToken: credential.accessToken,
+          accountId: credential.accountId,
+        })
+        modelsCache = { at: Date.now(), models, error: '' }
+        return { models, error: '' }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        modelsCache = { at: Date.now(), models: modelsCache.models, error: message }
+        return { models: modelsCache.models, error: message }
+      }
+    })()
     try {
-      const models = await fetchCodexModels({
-        accessToken: credential.accessToken,
-        accountId: credential.accountId,
-      })
-      modelsCache = { at: Date.now(), models, error: '' }
-      return { models, error: '' }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
-      modelsCache = { at: Date.now(), models: modelsCache.models, error: message }
-      return { models: modelsCache.models, error: message }
+      return await inflightModels
+    } finally {
+      inflightModels = null
     }
   }
 
@@ -736,6 +754,10 @@ export function apply(ctx, config) {
       // 写操作必须带同源 Origin：浏览器同源 POST 一定带，缺失按跨站写入处理。
       if (!origin) return '缺少 Origin，已拒绝跨站写入。'
       if (!expected) return '无法确认本机 origin，已拒绝写入。'
+      // 再校验本机随机令牌：即使经代理访问、Origin/Host 都可伪造，攻击者也读不到快照里的令牌。
+      if (String(req.headers['x-dsh-write-token'] || '') !== WRITE_TOKEN) {
+        return '写操作缺少本机令牌，已拒绝。'
+      }
       if (!/^application\/json\b/i.test(String(req.headers['content-type'] || ''))) {
         return 'POST 需要 application/json。'
       }
@@ -965,6 +987,9 @@ export function apply(ctx, config) {
             gptNameDetect: snap.global.gptNameDetect === true,
           }
           snap.llm = { providers: [], adapter: { registered: Boolean(snap.llm && snap.llm.adapter && snap.llm.adapter.registered), error: '' } }
+        } else {
+          // 本机页面才拿得到写操作令牌；局域网只读与跨站请求都拿不到。
+          snap.writeToken = WRITE_TOKEN
         }
         sendJson(res, 200, snap)
         return
@@ -974,7 +999,7 @@ export function apply(ctx, config) {
         const extra = await applyOp(body)
         const sessionId = normalizeSessionId(body.sessionId)
         const credential = describeCredential(authStore.read())
-        sendJson(res, 200, { ...snapshot(sessionId, credential), result: extra })
+        sendJson(res, 200, { ...snapshot(sessionId, credential), writeToken: WRITE_TOKEN, result: extra })
         return
       }
       sendJson(res, 405, { ok: false, error: 'method not allowed' })
@@ -1001,8 +1026,8 @@ export function apply(ctx, config) {
         const handle = ctx.llm.registerAdapter(
           ['chatgpt-codex'],
           createCodexGptAdapter({
-            getCredential: async () => {
-              const credential = await ensureAccessToken(authStore)
+            getCredential: async (options) => {
+              const credential = await ensureAccessToken(authStore, options || {})
               return credential
                 ? { accessToken: credential.accessToken, accountId: credential.accountId }
                 : undefined

@@ -18,6 +18,8 @@ window.__ModuleLoader__.load({
     const h = React.createElement
 
     const API = '/dsh-codex-api'
+    /** 写操作令牌：由同源 GET 快照下发，跨站页面读不到响应体因此拿不到。 */
+    let writeToken = ''
 
     /** 没有模型目录时用的恒定订阅/取值，保证 hook 调用顺序稳定。 */
     const noopSubscribe = () => () => {}
@@ -114,6 +116,7 @@ window.__ModuleLoader__.load({
         const message = (payload && payload.error) || `HTTP ${response.status}`
         throw new Error(message)
       }
+      if (typeof payload.writeToken === 'string' && payload.writeToken) writeToken = payload.writeToken
       return payload
     }
 
@@ -122,25 +125,49 @@ window.__ModuleLoader__.load({
       return request(API + query, { headers: { Accept: 'application/json' }, cache: 'no-store' })
     }
 
-    function postOp(payload) {
-      return request(API, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-        body: JSON.stringify(payload),
-      })
+    async function postOp(payload, retried) {
+      try {
+        return await request(API, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Accept: 'application/json',
+            'x-dsh-write-token': writeToken,
+          },
+          body: JSON.stringify(payload),
+        })
+      } catch (error) {
+        // 令牌还没拿到（页面刚加载就点按钮）时，先取一次快照再重试。
+        const message = String((error && error.message) || error)
+        if (!retried && message.indexOf('令牌') >= 0) {
+          await request(API, { headers: { Accept: 'application/json' }, cache: 'no-store' })
+          return postOp(payload, true)
+        }
+        throw error
+      }
     }
 
     function ToggleBox(props) {
       const on = props.on === true
+      const toggle = props.onClick
       return h(
         'span',
         {
           role: 'switch',
+          tabIndex: toggle ? 0 : undefined,
           'aria-checked': on ? 'true' : 'false',
-          onClick: props.onClick,
+          onClick: toggle,
+          onKeyDown: toggle
+            ? (event) => {
+                if (event.key === ' ' || event.key === 'Enter') {
+                  event.preventDefault()
+                  toggle()
+                }
+              }
+            : undefined,
           style: {
             ...styles.toggleTrack,
-            cursor: props.onClick ? 'pointer' : undefined,
+            cursor: toggle ? 'pointer' : undefined,
             background: on ? 'var(--dsw-specific-accent, #4d6bfe)' : styles.toggleTrack.background,
           },
         },
