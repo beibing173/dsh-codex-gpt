@@ -412,14 +412,14 @@ window.__ModuleLoader__.load({
     function formatCountdown(ms, lang = 'zh') {
       const total = Math.max(0, Math.round(Number(ms) / 60_000))
       const en = lang === 'en'
-      if (total <= 0) return en ? 'less than 1 min' : '不到 1 分钟'
+      if (total <= 0) return en ? '<1m' : '不到1分'
       const hours = Math.floor(total / 60)
       const minutes = total % 60
       if (hours > 0) {
-        if (!en) return minutes > 0 ? `${hours} 小时 ${minutes} 分` : `${hours} 小时`
-        return minutes > 0 ? `${hours} h ${minutes} min` : `${hours} h`
+        if (!en) return minutes > 0 ? `${hours}小时${minutes}分` : `${hours}小时`
+        return minutes > 0 ? `${hours}h${minutes}m` : `${hours}h`
       }
-      return en ? `${minutes} min` : `${minutes} 分钟`
+      return en ? `${minutes}m` : `${minutes}分`
     }
 
     /**
@@ -611,11 +611,11 @@ window.__ModuleLoader__.load({
       zh: {
         balance: '余额',
         paygo: '按量计费',
-        offPeak: '折扣价时段',
-        peak: '标准价时段',
+        offPeak: '空闲·半价',
+        peak: '高峰·标准价',
         peakUnknown: '时段未知',
-        nextOffPeak: '恢复标准价还有',
-        nextPeak: '进入折扣价还有',
+        nextOffPeak: '距高峰时段',
+        nextPeak: '距空闲时段',
         loading: '正在读取…',
         noBalance: '暂无余额数据',
         noUsage: '暂无用量数据',
@@ -636,11 +636,11 @@ window.__ModuleLoader__.load({
       en: {
         balance: 'Balance',
         paygo: 'Pay as you go',
-        offPeak: 'Off-peak pricing',
-        peak: 'Standard pricing',
+        offPeak: 'Off-peak (half price)',
+        peak: 'Peak (standard price)',
         peakUnknown: 'Pricing window unknown',
-        nextOffPeak: 'standard pricing in',
-        nextPeak: 'off-peak pricing in',
+        nextOffPeak: 'peak in',
+        nextPeak: 'off-peak in',
         loading: 'Loading…',
         noBalance: 'No balance data',
         noUsage: 'No usage data',
@@ -1181,7 +1181,7 @@ window.__ModuleLoader__.load({
             ),
             h(
               'div',
-              { key: 'peak', style: { display: 'flex', alignItems: 'center', gap: '5px' } },
+              { key: 'peak', style: { display: 'flex', alignItems: 'center', gap: '5px', whiteSpace: 'nowrap', overflow: 'hidden' } },
               h('span', {
                 style: {
                   width: '6px',

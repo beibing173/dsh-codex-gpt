@@ -5,14 +5,20 @@
  *   1. ChatGPT 订阅的 5 小时 / 每周限额（usage.js，读 ChatGPT 后端）；
  *   2. DeepSeek 账户余额 + 当前是高峰价还是空闲价（本文件）。
  *
- * 峰谷规则（DeepSeek 官方定价说明）：北京时间 00:30–08:30 为空闲时段（折扣价），
- * 其余时间为高峰时段（标准价）。这里只做本地时间换算，不联网。
+ * 峰谷规则（官方定价页 api-docs.deepseek.com/quick_start/pricing，2026-10 核对）：
+ *   - **高峰**：UTC 01:00–04:00 与 06:00–10:00，**周一至周五**（对应北京时间 09:00–12:00、14:00–18:00）；
+ *   - **空闲（半价）**：其余所有时间，含周末与中国法定节假日全天；
+ *   - 空闲价是高峰价的**一半**。
+ * 法定节假日没有通用日历，这里只按「周一至周五」计算（节假日当天官方按半价，这里会显示成高峰，
+ * 属于已知近似；节假日当天请以官方计费为准）。
  */
 
-const BEIJING_OFFSET_MINUTES = 8 * 60
-/** 空闲时段：00:30 开始，08:30 结束（北京时间）。 */
-const OFF_PEAK_START_MINUTES = 30
-const OFF_PEAK_END_MINUTES = 8 * 60 + 30
+/** 高峰时段：UTC 小时区间（左闭右开），仅周一至周五生效。 */
+const PEAK_WINDOWS_UTC = [
+  [1, 4],
+  [6, 10],
+]
+const HOUR_MS = 60 * 60 * 1000
 
 const BALANCE_PATH = '/user/balance'
 /** 官方端点；可用 DEEPSEEK_BASE_URL 覆盖（与 llm-deepseek 适配器一致）。 */
@@ -25,37 +31,43 @@ export function balanceUrl(baseUrl) {
   return `${base.replace(/\/+$/, '')}${BALANCE_PATH}`
 }
 
-/** 当前时刻在北京时间里的「当天第几分钟」。 */
-function beijingMinuteOfDay(nowMs) {
-  const shifted = new Date(nowMs + BEIJING_OFFSET_MINUTES * 60_000)
-  return shifted.getUTCHours() * 60 + shifted.getUTCMinutes()
+/** 某个时刻是否处在高峰时段（UTC 工作日 + 高峰窗口）。 */
+export function isPeakAt(nowMs) {
+  const date = new Date(nowMs)
+  const day = date.getUTCDay()
+  // 0 = 周日，6 = 周六：周末全天半价
+  if (day === 0 || day === 6) return false
+  const hour = date.getUTCHours()
+  return PEAK_WINDOWS_UTC.some(([start, end]) => hour >= start && hour < end)
+}
+
+/** 下一个「状态翻转」的整点时刻（边界都在整点，按小时推进足够）。 */
+function nextChangeAt(fromMs, currentPeak) {
+  let cursor = Math.floor(fromMs / HOUR_MS) * HOUR_MS + HOUR_MS
+  for (let i = 0; i < 24 * 10; i += 1) {
+    if (isPeakAt(cursor) !== currentPeak) return cursor
+    cursor += HOUR_MS
+  }
+  return 0
 }
 
 /**
- * 当前是否处于空闲（折扣）时段，以及下一次切换的时间点。
+ * 当前是否处于高峰时段，以及下一次切换的时间点。
  *
  * @param {number} nowMs - 当前毫秒时间戳。
- * @returns {{ isPeak: boolean, label: string, nextChangeAt: number, nextLabel: string }}
+ * @returns {{ isPeak: boolean, label: string, nextChangeAt: number, nextLabel: string, halfPriceOffPeak: boolean, excludesHolidays: boolean }}
  */
 export function peakState(nowMs = Date.now()) {
-  const minute = beijingMinuteOfDay(nowMs)
-  const isOffPeak = minute >= OFF_PEAK_START_MINUTES && minute < OFF_PEAK_END_MINUTES
-
-  // 距离下一次切换还有多少分钟。
-  let minutesToChange
-  if (isOffPeak) {
-    minutesToChange = OFF_PEAK_END_MINUTES - minute
-  } else if (minute < OFF_PEAK_START_MINUTES) {
-    minutesToChange = OFF_PEAK_START_MINUTES - minute
-  } else {
-    minutesToChange = 24 * 60 - minute + OFF_PEAK_START_MINUTES
-  }
-
+  const isPeak = isPeakAt(nowMs)
   return {
-    isPeak: !isOffPeak,
-    label: isOffPeak ? '空闲时段（折扣价）' : '高峰时段（标准价）',
-    nextChangeAt: nowMs + minutesToChange * 60_000,
-    nextLabel: isOffPeak ? '恢复标准价' : '进入折扣价',
+    isPeak,
+    label: isPeak ? '高峰时段（标准价）' : '空闲时段（半价）',
+    nextChangeAt: nextChangeAt(nowMs, isPeak),
+    nextLabel: isPeak ? '进入空闲时段' : '进入高峰时段',
+    /** 空闲价是高峰价的一半（官方定价页脚注）。 */
+    halfPriceOffPeak: true,
+    /** 法定节假日没有通用日历：这里按「周一至周五」近似，节假日当天官方实际按半价。 */
+    excludesHolidays: false,
   }
 }
 

@@ -2,52 +2,64 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { fetchDeepseekBalance, parseDeepseekBalance, peakState, balanceUrl, PUBLIC_BASE_URL } from '../deepseek.js'
 
-/** 北京时间转时间戳（UTC+8）。 */
-function beijing(year, month, day, hour, minute) {
-  return Date.UTC(year, month - 1, day, hour - 8, minute, 0, 0)
+/**
+ * 官方规则（api-docs.deepseek.com/quick_start/pricing，2026-10 核对）：
+ * 高峰 = UTC 01:00–04:00 与 06:00–10:00，周一至周五；其余（含周末、节假日全天）半价。
+ * 北京时间 = UTC + 8，所以工作日 09:00–12:00、14:00–18:00 是高峰。
+ */
+function utc(year, month, day, hour, minute = 0) {
+  return Date.UTC(year, month - 1, day, hour, minute, 0, 0)
 }
 
-test('peakState: 00:30–08:30 是空闲（折扣）时段', () => {
-  const at0030 = peakState(beijing(2026, 10, 29, 0, 30))
-  assert.equal(at0030.isPeak, false)
-  assert.match(at0030.label, /空闲/)
-
-  const at0500 = peakState(beijing(2026, 10, 29, 5, 0))
-  assert.equal(at0500.isPeak, false)
-
-  const at0829 = peakState(beijing(2026, 10, 29, 8, 29))
-  assert.equal(at0829.isPeak, false)
+test('peakState: 工作日 UTC 01–04 / 06–10 是高峰，其余空闲', () => {
+  // 2026-11-02 是周一
+  const cases = [
+    [1, 0, true],
+    [3, 59, true],
+    [4, 0, false],
+    [5, 30, false],
+    [6, 0, true],
+    [9, 59, true],
+    [10, 0, false],
+    [0, 30, false],
+  ]
+  for (const [hour, minute, expected] of cases) {
+    const state = peakState(utc(2026, 11, 2, hour, minute))
+    assert.equal(state.isPeak, expected, '周一 UTC ' + hour + ':' + minute + ' 判定错误')
+    assert.equal(state.halfPriceOffPeak, true, '官方：空闲价是高峰价的一半')
+  }
 })
 
-test('peakState: 其余时间都是高峰（标准价）', () => {
-  for (const [hour, minute] of [
-    [0, 29],
-    [8, 30],
-    [12, 0],
-    [23, 59],
-  ]) {
-    const state = peakState(beijing(2026, 10, 29, hour, minute))
-    assert.equal(state.isPeak, true, `${hour}:${minute} 应为高峰`)
-    assert.match(state.label, /高峰/)
+test('peakState: 周末全天都是空闲（半价）', () => {
+  // 2026-11-07 周六、2026-11-08 周日
+  for (const hour of [1, 2, 6, 9]) {
+    for (const day of [7, 8]) {
+      const state = peakState(utc(2026, 11, day, hour, 0))
+      assert.equal(state.isPeak, false, '周末 UTC ' + hour + ':00 应为空闲')
+      assert.match(state.label, /空闲/)
+    }
   }
 })
 
 test('peakState: 下一次切换时间点算得对', () => {
-  // 空闲中 07:30 → 60 分钟后恢复标准价
-  const nearEnd = peakState(beijing(2026, 10, 29, 7, 30))
-  assert.equal(nearEnd.isPeak, false)
-  assert.equal(nearEnd.nextChangeAt, beijing(2026, 10, 29, 8, 30))
-  assert.match(nearEnd.nextLabel, /恢复标准价/)
+  // 周一 00:30 空闲 → 01:00 进入高峰
+  const beforePeak = peakState(utc(2026, 11, 2, 0, 30))
+  assert.equal(beforePeak.isPeak, false)
+  assert.equal(beforePeak.nextChangeAt, utc(2026, 11, 2, 1, 0))
+  assert.match(beforePeak.nextLabel, /进入高峰/)
 
-  // 高峰中 00:00 → 30 分钟后进入折扣价
-  const nearStart = peakState(beijing(2026, 10, 29, 0, 0))
-  assert.equal(nearStart.isPeak, true)
-  assert.equal(nearStart.nextChangeAt, beijing(2026, 10, 29, 0, 30))
-  assert.match(nearStart.nextLabel, /折扣价/)
+  // 周一 02:00 高峰 → 04:00 进空闲
+  const inPeak = peakState(utc(2026, 11, 2, 2, 0))
+  assert.equal(inPeak.nextChangeAt, utc(2026, 11, 2, 4, 0))
+  assert.match(inPeak.nextLabel, /进入空闲/)
 
-  // 高峰中 12:00 → 次日 00:30
-  const noon = peakState(beijing(2026, 10, 29, 12, 0))
-  assert.equal(noon.nextChangeAt, beijing(2026, 10, 30, 0, 30))
+  // 周一 10:00 空闲 → 次日（周二）01:00 进高峰
+  const afterPeak = peakState(utc(2026, 11, 2, 10, 0))
+  assert.equal(afterPeak.nextChangeAt, utc(2026, 11, 3, 1, 0))
+
+  // 周六 02:00 空闲 → 下周一 01:00
+  const weekend = peakState(utc(2026, 11, 7, 2, 0))
+  assert.equal(weekend.nextChangeAt, utc(2026, 11, 9, 1, 0))
 })
 
 test('parseDeepseekBalance: 取 CNY 账户的总额', () => {
