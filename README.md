@@ -15,6 +15,8 @@
 
 ---
 
+> 接手开发 / 换新对话窗口：先读 [HANDOFF.md](./HANDOFF.md)（项目现状、坑、待办）。
+
 ## 特性
 
 ### 1. ChatGPT 作为 LLM provider（直接对话）
