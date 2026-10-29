@@ -114,6 +114,11 @@ export const Config = z.object({
       '仅看板模式：开启后不注册 ChatGPT 模型、codex 工具、会话授权策略与用量凭证同步，只保留侧边栏看板。切换后需禁用→启用插件才完全生效。',
     )
     .volatile(),
+  hideDashboard: z
+    .boolean()
+    .default(false)
+    .description('关闭侧边栏用量看板：隐藏卡片，只保留 ChatGPT 相关功能（与「仅看板模式」互不影响）。')
+    .volatile(),
   defaultUsageTab: z
     .string()
     .default('auto')
@@ -398,6 +403,8 @@ export function apply(ctx, config) {
   const gptNameDetect = () => readValue('gptNameDetect') === true
   /** 仅看板模式：关闭所有 GPT/Codex 功能，只留用量看板（默认关闭）。 */
   const dashboardOnly = () => readValue('dashboardOnly') === true
+  /** 关闭侧边栏看板：只隐藏用量卡片，不影响 ChatGPT 功能（默认关闭）。 */
+  const hideDashboard = () => readValue('hideDashboard') === true
   /** 侧边栏用量卡默认展示哪一家：'auto'（跟随当前模型）或具体 provider id。 */
   const defaultUsageTab = () => {
     const raw = readValue('defaultUsageTab')
@@ -1101,6 +1108,7 @@ export function apply(ctx, config) {
         gptNameDetect: gptNameDetect(),
         defaultUsageTab: defaultUsageTab(),
         dashboardOnly: dashboardOnly(),
+        hideDashboard: hideDashboard(),
         currentModel: currentModelSelection(),
       },
       session: sessionId ? { ...store.get(sessionId), model: effectiveModel(sessionId) } : null,
@@ -1134,6 +1142,7 @@ export function apply(ctx, config) {
       if (typeof patch.delegateLightTasks === 'boolean') next.delegateLightTasks = patch.delegateLightTasks
       if (typeof patch.gptNameDetect === 'boolean') next.gptNameDetect = patch.gptNameDetect
       if (typeof patch.dashboardOnly === 'boolean') next.dashboardOnly = patch.dashboardOnly
+      if (typeof patch.hideDashboard === 'boolean') next.hideDashboard = patch.hideDashboard
       if (typeof patch.defaultUsageTab === 'string') {
         next.defaultUsageTab = patch.defaultUsageTab.trim().slice(0, 100)
       }
@@ -1249,6 +1258,7 @@ export function apply(ctx, config) {
             currentModel: currentModelSelection(),
             defaultUsageTab: redacted ? '' : defaultUsageTab(),
             dashboardOnly: dashboardOnly(),
+            hideDashboard: hideDashboard(),
           })
           return
         }

@@ -1315,6 +1315,7 @@ window.__ModuleLoader__.load({
       const [gptNameDetect, setGptNameDetect] = useState(false)
       const [defaultUsageTab, setDefaultUsageTab] = useState('auto')
       const [dashboardOnly, setDashboardOnly] = useState(false)
+      const [hideDashboard, setHideDashboard] = useState(false)
       const [usageTabOptions, setUsageTabOptions] = useState([
         { id: 'auto', label: L('自动（跟随当前模型）', 'Auto (follow current model)') },
         { id: 'deepseek', label: 'DeepSeek' },
@@ -1425,6 +1426,7 @@ window.__ModuleLoader__.load({
             setGptNameDetect(data.global.gptNameDetect === true)
             setDefaultUsageTab(data.global.defaultUsageTab || 'chatgpt')
             setDashboardOnly(data.global.dashboardOnly === true)
+            setHideDashboard(data.global.hideDashboard === true)
             setDeepseekModel(data.global.deepseekModel || '')
           }
           if (data.auth && data.auth.loggedIn) {
@@ -1569,6 +1571,7 @@ window.__ModuleLoader__.load({
               gptNameDetect,
               defaultUsageTab,
               dashboardOnly,
+              hideDashboard,
             },
           })
           setNotice(L('已保存并生效。', 'Saved and applied.'))
@@ -1577,7 +1580,7 @@ window.__ModuleLoader__.load({
         } finally {
           setBusy(false)
         }
-      }, [defaultModel, autoConsult, allowLan, delegateLight, deepseekModel, gptNameDetect, defaultUsageTab, dashboardOnly])
+      }, [defaultModel, autoConsult, allowLan, delegateLight, deepseekModel, gptNameDetect, defaultUsageTab, dashboardOnly, hideDashboard])
 
       const checkNetwork = useCallback(async () => {
         setChecking(true)
@@ -1656,11 +1659,11 @@ window.__ModuleLoader__.load({
       return h(
         'div',
         { style: styles.page },
-        // ── 仅看板模式 ───────────────────────────────────────────────
+        // ── 仅看板模式 / 关闭看板 ─────────────────────────────────────
         h(
           'div',
           { style: styles.card },
-          h('div', { style: styles.title }, '🦭 仅看板模式'),
+          h('div', { style: styles.title }, '🦭 看板开关'),
           h(
             'div',
             { style: styles.row },
@@ -1669,12 +1672,27 @@ window.__ModuleLoader__.load({
               checked: dashboardOnly,
               onChange: (event) => setDashboardOnly(event.target.checked),
             }),
-            h('span', { style: styles.label }, '只保留用量看板'),
+            h('span', { style: styles.label }, '仅看板模式：只保留用量看板'),
           ),
           h(
             'div',
             { style: styles.hint },
             '开启后关闭 ChatGPT 模型、codex 工具、会话授权与凭证同步，设置页只留看板相关项。默认关闭；保存后需禁用→启用插件完全生效。',
+          ),
+          h(
+            'div',
+            { style: styles.row },
+            h('input', {
+              type: 'checkbox',
+              checked: hideDashboard,
+              onChange: (event) => setHideDashboard(event.target.checked),
+            }),
+            h('span', { style: styles.label }, '关闭看板：隐藏侧边栏卡片'),
+          ),
+          h(
+            'div',
+            { style: styles.hint },
+            '与「仅看板模式」互不影响：打开它只把侧边栏那张用量卡藏起来，ChatGPT 模型、codex 工具、会话授权照旧可用。保存后需禁用→启用插件完全生效。',
           ),
           h(
             'div',
@@ -2094,9 +2112,10 @@ window.__ModuleLoader__.load({
             .then((response) => (response && response.ok ? response.json() : null))
             .then((data) => {
               if (data && data.dashboardOnly === true) disposeToggle()
+              if (data && data.hideDashboard === true) disposeCard()
             })
             .catch(() => {
-              // 读不到就保持默认（胶囊留着，用户可再打开设置检查）
+              // 读不到就保持默认（胶囊/卡片留着，用户可再打开设置检查）
             })
         }
         slots.inject('settings.section', () =>
@@ -2110,8 +2129,20 @@ window.__ModuleLoader__.load({
             (props) => h(CodexSettings, { locale: (props && props.locale) || localeService }),
           ),
         )
-        slots.inject('sidebar.footer.action', () =>
-          slots.register(
+        // 侧边栏用量卡：「关闭看板」开关打开时把它摘掉（只影响看板，不影响 GPT 功能）。
+        let cardHandle = null
+        const disposeCard = () => {
+          const handle = cardHandle
+          cardHandle = null
+          try {
+            if (handle && typeof handle.dispose === 'function') handle.dispose()
+            else if (typeof handle === 'function') handle()
+          } catch {
+            // 摘不掉也不影响其它 UI
+          }
+        }
+        slots.inject('sidebar.footer.action', () => {
+          cardHandle = slots.register(
             {
               name: 'sidebar.footer.action',
               id: 'dsh-codex-usage',
@@ -2124,8 +2155,9 @@ window.__ModuleLoader__.load({
                 null,
                 h(CodexUsageCard, { wide: props && props.wide, locale: (props && props.locale) || localeService }),
               ),
-          ),
-        )
+          )
+          return cardHandle
+        })
       },
     }
   },

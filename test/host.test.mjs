@@ -924,3 +924,20 @@ test('仅看板模式：不注册 codex / deepseek_delegate 工具与 ChatGPT �
   assert.equal(saved.status, 200)
   assert.equal((await callApi(normal, {})).json.global.dashboardOnly, true)
 })
+
+test('关闭看板（hideDashboard）与仅看板模式互不影响，默认都关闭', async () => {
+  const normal = await createHarness()
+  const snap = await callApi(normal, {})
+  assert.equal(snap.json.global.hideDashboard, false)
+  assert.equal(snap.json.global.dashboardOnly, false)
+  // 打开「关闭看板」：工具与适配器仍然注册
+  const on = await createHarness({ hideDashboard: true })
+  assert.ok(on.tools.some((tool) => tool.name === 'codex'), '关看板不应移除 codex 工具')
+  assert.ok(on.tools.some((tool) => tool.name === 'deepseek_delegate'), '关看板不应移除委派工具')
+  const onSnap = await callApi(on, {})
+  assert.equal(onSnap.json.global.hideDashboard, true)
+  // 保存
+  const saved = await callApi(normal, { method: 'POST', body: { op: 'setGlobal', patch: { hideDashboard: true } } })
+  assert.equal(saved.status, 200)
+  assert.equal((await callApi(normal, {})).json.global.hideDashboard, true)
+})
