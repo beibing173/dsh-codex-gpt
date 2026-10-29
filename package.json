@@ -42,5 +42,8 @@
     "openai",
     "gpt"
   ],
+  "dependencies": {
+    "@deepseek-ai/schemastery": "^3.18.5"
+  },
   "license": "MIT"
 }
