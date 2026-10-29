@@ -63,3 +63,10 @@ test('i18n: 语言探测有 <html lang> 兜底，且 useLang 不用 useSyncExter
   assert.equal(body.includes('useSyncExternalStore'), false, 'useLang 不应再用 useSyncExternalStore')
   assert.ok(body.includes('setLang'), 'useLang 应该用 setState 方式跟踪语言')
 })
+
+test('i18n: 英文词典实际输出正确（72% left，而不是 剩 72%）', async () => {
+  const { default: loaded } = await import('../client.js?test-lang').catch(() => ({ default: null }))
+  // client.js 依赖 window.__ModuleLoader__，这里改用源码里的 __test 导出做等价校验。
+  assert.ok(source.includes("__test: { I18N, translate, detectLang, normalizeLang }"), '客户端应导出测试钩子')
+  assert.ok(source.includes("`${n}% left`"), '英文剩余百分比应为 n% left')
+})

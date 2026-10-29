@@ -12,7 +12,7 @@
  * 组成：`codex` 工具 + 每会话提示策略段 + `/dsh-codex-api` 状态/登录路由 + 本地 OAuth 回调。
  */
 import z from '@deepseek-ai/schemastery'
-import { readFileSync, writeFileSync, mkdirSync, renameSync, unlinkSync } from 'node:fs'
+import { readFileSync, writeFileSync, mkdirSync, renameSync, unlinkSync, readdirSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { homedir, networkInterfaces } from 'node:os'
 import { randomBytes, createHash } from 'node:crypto'
@@ -487,6 +487,33 @@ export function apply(ctx, config) {
       },
     }
   })()
+
+  /**
+   * 读 DSH 的界面语言（`profiles/<name>/cordis.patch.yml` 里 `- id: locale` 的 preference）。
+   * 这是配置里的真实值，比在浏览器端猜 `<html lang>` 可靠：客户端卡片用它决定中/英。
+   */
+  const readUiLocale = () => {
+    const env = (typeof process !== 'undefined' && process.env) || {}
+    const root = env.DSH_HOME || join(homedir(), '.dsh')
+    const profiles = join(root, 'profiles')
+    const parse = (text) => {
+      const block = /- id: locale[\s\S]{0,400}?preference:\s*['"]?([A-Za-z-]+)/.exec(text || '')
+      return block ? block[1].toLowerCase() : ''
+    }
+    try {
+      for (const name of readdirSync(profiles)) {
+        try {
+          const value = parse(readFileSync(join(profiles, name, 'cordis.patch.yml'), 'utf8'))
+          if (value) return value
+        } catch {
+          // 该 profile 没有配置文件就跳过
+        }
+      }
+    } catch {
+      // 读不到 profiles 目录就当未知
+    }
+    return ''
+  }
 
   /** 模型列表缓存（OAuth 登录后从 OpenAI 拉取）。 */
   let modelsCache = { at: 0, models: [], error: '' }
@@ -1045,6 +1072,7 @@ export function apply(ctx, config) {
     return {
       ok: true,
       pluginVersion: PLUGIN_VERSION,
+      uiLang: readUiLocale(),
       auth,
       llm: { providers: llmProviders, adapter: llmAdapterStatus },
       global: {
@@ -1198,6 +1226,7 @@ export function apply(ctx, config) {
           sendJson(res, 200, {
             ok: true,
             pluginVersion: PLUGIN_VERSION,
+            uiLang: readUiLocale(),
             currentModel: currentModelSelection(),
             defaultUsageTab: redacted ? '' : defaultUsageTab(),
           })

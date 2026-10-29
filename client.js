@@ -647,7 +647,10 @@ window.__ModuleLoader__.load({
 
     function CodexUsageCard(props) {
       const locale = props && props.locale
-      const lang = useLang(locale)
+      // 宿主直接读 DSH 配置得到的界面语言最准；拿不到再用 locale 服务/&lt;html lang&gt; 兜底。
+      const [hostLang, setHostLang] = useState('')
+      const detectedLang = useLang(locale)
+      const lang = hostLang === 'en' || hostLang === 'zh' ? hostLang : detectedLang
       const t = (key, ...args) => translate(lang, key, ...args)
       /** 就地双语：中文 / 英文（英文缺译时回退中文）。 */
       const L = (zh, en) => (lang === 'en' ? en : zh)
@@ -717,6 +720,10 @@ window.__ModuleLoader__.load({
        */
       const loadPreferred = useCallback(async () => {
         const seq = ++preferredSeq.current
+        /** 宿主读到的界面语言（DSH 配置里的真实值）优先于客户端猜测。 */
+        const applyHostLang = (value) => {
+          if (value === 'en' || value === 'zh') setHostLang(value)
+        }
         try {
           const data = await request(API + '?meta=1', {
             headers: { Accept: 'application/json' },
@@ -727,6 +734,7 @@ window.__ModuleLoader__.load({
           const isMeta = data && data.ok === true && data.currentModel !== undefined && data.auth === undefined
           if (isMeta) {
             if (!mounted.current || seq !== preferredSeq.current) return
+            applyHostLang(data.uiLang)
             setCurrentModel(data.currentModel || null)
             if (typeof data.defaultUsageTab === 'string' && data.defaultUsageTab) {
               setPreferred(data.defaultUsageTab)
@@ -736,6 +744,7 @@ window.__ModuleLoader__.load({
           // 旧宿主不认 meta，直接把整份快照返回了：就地用它，免得再打一次。
           if (data && data.ok === true && data.global) {
             if (!mounted.current || seq !== preferredSeq.current) return
+            applyHostLang(data.uiLang)
             if (typeof data.global.defaultUsageTab === 'string' && data.global.defaultUsageTab) {
               setPreferred(data.global.defaultUsageTab)
             }
@@ -749,6 +758,7 @@ window.__ModuleLoader__.load({
         try {
           const data = await loadState('')
           if (!mounted.current || full !== preferredSeq.current) return
+          applyHostLang(data.uiLang)
           setPreferred((data.global && data.global.defaultUsageTab) || 'auto')
           setCurrentModel((data.global && data.global.currentModel) || null)
         } catch {
@@ -1072,7 +1082,10 @@ window.__ModuleLoader__.load({
     /** 设置 →「ChatGPT」页。 */
     function CodexSettings(props) {
       const locale = props && props.locale
-      const lang = useLang(locale)
+      // 宿主读到的界面语言优先（DSH 配置事实），其次 locale 服务 / <html lang>。
+      const [hostLang, setHostLang] = useState('')
+      const detectedLang = useLang(locale)
+      const lang = hostLang === 'en' || hostLang === 'zh' ? hostLang : detectedLang
       const t = (key, ...args) => translate(lang, key, ...args)
       /** 就地双语：中文 / 英文（英文缺译时回退中文）。 */
       const L = (zh, en) => (lang === 'en' ? en : zh)
@@ -1182,6 +1195,7 @@ window.__ModuleLoader__.load({
         try {
           const data = await loadState('')
           setAuth(data.auth || { loggedIn: false })
+          if (data.uiLang === 'en' || data.uiLang === 'zh') setHostLang(data.uiLang)
           if (typeof data.pluginVersion === 'string' && data.pluginVersion) setPluginVersion(data.pluginVersion)
           if (!initialized.current) {
             initialized.current = true
@@ -1757,6 +1771,8 @@ window.__ModuleLoader__.load({
       // locale 必须显式 inject：不声明时 ctx.locale 是 undefined，只能靠 <html lang> 兜底，
       // 界面切英文后卡片/设置页会继续中文（这就是之前「英文没加上去」的真正原因）。
       inject: ['slots', 'locale'],
+      // 仅供测试：验证词典内容与语言探测（不影响运行时）。
+      __test: { I18N, translate, detectLang, normalizeLang },
       apply(ctx) {
         // locale 服务只取一次：渲染时不再访问 ctx 上的 getter，避免取值本身把渲染弄崩。
         // 拿不到就回退中文（组件内另有 <html lang> 兜底探测）。

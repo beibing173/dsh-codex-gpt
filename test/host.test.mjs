@@ -897,3 +897,11 @@ test('快照与 meta 都带插件版本号（设置页用它显示版本）', as
   assert.equal(typeof meta.json.pluginVersion, 'string')
   assert.equal(meta.json.pluginVersion, snap.json.pluginVersion)
 })
+test('快照与 meta 带 uiLang（宿主直接读 DSH 的 locale 配置）', async () => {
+  const harness = await createHarness()
+  const snap = await callApi(harness, {})
+  assert.equal(typeof snap.json.uiLang, 'string', 'uiLang 应是字符串')
+  const meta = await callApi(harness, { url: '/dsh-codex-api?meta=1' })
+  assert.equal(typeof meta.json.uiLang, 'string')
+  assert.equal(meta.json.uiLang, snap.json.uiLang)
+})
