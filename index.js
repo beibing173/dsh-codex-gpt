@@ -25,8 +25,8 @@ export const name = 'dsh-codex'
 /** profile 条目 id：cordis.patch.yml 里 `- id: dsh-codex` 必须与此一致。 */
 export const ENTRY_ID = 'dsh-codex'
 
-/** Host 硬依赖：工具注册与提示组装。 */
-export const inject = ['tools', 'systemPrompt']
+/** Host 依赖：工具注册、提示组装、状态路由（与 dsh-meme 一致，webServer 为硬依赖）。 */
+export const inject = ['tools', 'systemPrompt', 'webServer']
 
 export const DEFAULT_MODELS = ['gpt-5-codex', 'gpt-5', 'gpt-5-mini', 'gpt-4.1', 'o4-mini']
 const DEFAULT_BASE_URL = 'https://api.openai.com/v1'
@@ -610,18 +610,33 @@ export function apply(ctx, config) {
     }
   }
 
+  // webServer 是可选服务：已就绪则直接注册；否则用 ctx.inject 等它就绪
+  // （headless profile 没有 webServer 时插件仍只提供工具与提示）。
+  const registerRoutes = (server) => {
+    if (!server || typeof server.register !== 'function') return
+    ctx.effect(
+      () =>
+        server.register({
+          kind: 'prefix',
+          path: ROUTE,
+          handler,
+        }),
+      'dsh-codex: /dsh-codex-api 状态路由',
+    )
+  }
+
   try {
-    const webServer = (ctx.webServer ?? (ctx.get ? ctx.get('webServer') : undefined)) || undefined
-    if (webServer && typeof webServer.register === 'function') {
-      ctx.effect(
-        () =>
-          webServer.register({
-            kind: 'prefix',
-            path: ROUTE,
-            handler,
-          }),
-        'dsh-codex: /dsh-codex-api 状态路由',
-      )
+    const existing = ctx.webServer ?? (ctx.get ? ctx.get('webServer') : undefined)
+    if (existing) {
+      registerRoutes(existing)
+    } else if (typeof ctx.inject === 'function') {
+      ctx.inject(['webServer'], (child) => {
+        try {
+          registerRoutes(child.webServer)
+        } catch (error) {
+          warn('状态路由注册失败', error)
+        }
+      })
     } else {
       warn('未找到 webServer 服务：Codex 开关 UI 不可用（工具与提示仍可用）')
     }
