@@ -125,3 +125,28 @@ test('客户端声明了 slots 依赖', () => {
   assert.ok(Array.isArray(loaded.inject), 'inject 应为数组')
   assert.ok(loaded.inject.includes('slots'), 'inject 应包含 slots')
 })
+test('没有 slots 服务时安静退出，不抛错（不能把整个客户端插件带崩）', () => {
+  const source = readFileSync(new URL('../client.js', import.meta.url), 'utf8')
+  const noop = () => {}
+  const ReactStub = {
+    createElement: () => null,
+    useState: (init) => [typeof init === 'function' ? init() : init, noop],
+    useRef: (init) => ({ current: init }),
+    useEffect: noop,
+    useMemo: (fn) => fn(),
+    useCallback: (fn) => fn,
+    useSyncExternalStore: (s, g) => g(),
+    Component: class {},
+  }
+  let loaded
+  const windowStub = {
+    __ModuleLoader__: {
+      load: (mod) => {
+        loaded = mod.factory((name) => (name === 'react' ? ReactStub : (() => { throw new Error(name) })()))
+      },
+    },
+  }
+  new Function('window', 'localStorage', 'document', 'fetch', source)(windowStub, undefined, undefined, () => Promise.reject(new Error('no net')))
+  const ctx = { get: () => undefined }
+  assert.doesNotThrow(() => loaded.apply(ctx), 'ctx 没有 slots 时 apply 不应抛错')
+})

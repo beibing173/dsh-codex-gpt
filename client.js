@@ -1968,6 +1968,23 @@ window.__ModuleLoader__.load({
       // 仅供测试：校验第三方积分解析与文案字典（不影响运行时）。
       __test: { parseConnectPoints, I18N, translate, detectLang, normalizeLang },
       apply(ctx) {
+        // slots 服务：优先用注入的 ctx.slots，取不到再通过 ctx.get('slots') 兜底。
+        // 都拿不到就安静退出——不能让一个 slot 依赖把整个客户端插件（含其它 UI）带崩。
+        const slots = (() => {
+          try {
+            if (ctx && ctx.slots && typeof ctx.slots.inject === 'function') return ctx.slots
+          } catch {
+            // 忽略，继续尝试 ctx.get
+          }
+          try {
+            const service = ctx && typeof ctx.get === 'function' ? ctx.get('slots') : null
+            if (service && typeof service.inject === 'function') return service
+          } catch {
+            // 读不到就当中没有
+          }
+          return null
+        })()
+        if (!slots) return
         // locale 服务只取一次：渲染时不再访问 ctx 上的 getter，避免取值本身把渲染弄崩。
         // 拿不到就回退中文（组件内另有 <html lang> 兜底探测）。
         const localeService = (() => {
@@ -1977,8 +1994,8 @@ window.__ModuleLoader__.load({
             return null
           }
         })()
-        ctx.slots.inject('conversation.input.left', () =>
-          ctx.slots.register(
+        slots.inject('conversation.input.left', () =>
+          slots.register(
             {
               name: 'conversation.input.left',
               id: 'codex-toggle',
@@ -1998,8 +2015,8 @@ window.__ModuleLoader__.load({
               h(CodexToggle, { ...(props || {}), locale: (props && props.locale) || localeService }),
           ),
         )
-        ctx.slots.inject('settings.section', () =>
-          ctx.slots.register(
+        slots.inject('settings.section', () =>
+          slots.register(
             {
               name: 'settings.section',
               id: 'dsh-codex',
@@ -2009,8 +2026,8 @@ window.__ModuleLoader__.load({
             (props) => h(CodexSettings, { locale: (props && props.locale) || localeService }),
           ),
         )
-        ctx.slots.inject('sidebar.footer.action', () =>
-          ctx.slots.register(
+        slots.inject('sidebar.footer.action', () =>
+          slots.register(
             {
               name: 'sidebar.footer.action',
               id: 'dsh-codex-usage',
