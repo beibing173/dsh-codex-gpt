@@ -786,7 +786,7 @@ test('用量卡默认展示项：默认 ChatGPT，可通过 setGlobal 改成其�
   writeAuth()
   const harness = createHarness()
   const before = await callApi(harness, {})
-  assert.equal(before.json.global.defaultUsageTab, 'chatgpt')
+  assert.equal(before.json.global.defaultUsageTab, 'auto')
 
   const saved = await callApi(harness, {
     method: 'POST',
@@ -799,5 +799,5 @@ test('用量卡默认展示项：默认 ChatGPT，可通过 setGlobal 改成其�
   // 清空回到默认值
   await callApi(harness, { method: 'POST', body: { op: 'setGlobal', patch: { defaultUsageTab: '' } } })
   const reset = await callApi(harness, {})
-  assert.equal(reset.json.global.defaultUsageTab, 'chatgpt')
+  assert.equal(reset.json.global.defaultUsageTab, 'auto')
 })

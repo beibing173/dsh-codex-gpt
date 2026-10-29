@@ -99,8 +99,8 @@ export const Config = z.object({
     .volatile(),
   defaultUsageTab: z
     .string()
-    .default('chatgpt')
-    .description('侧边栏用量卡默认展示哪一家：chatgpt（本插件），或用量的提供商 id（如 deepseek-account）。点击卡片标题可临时切换。')
+    .default('auto')
+    .description('侧边栏用量卡默认展示哪一家：auto（跟随当前在用的模型）、chatgpt、deepseek，或其它 AI 的 provider id。点卡片可临时切换。')
     .volatile(),
 })
 
@@ -379,11 +379,29 @@ export function apply(ctx, config) {
   const delegateLightTasks = () => readValue('delegateLightTasks') === true
   /** 保险开关：是否按模型名把其他 provider 的 GPT 模型也算作 GPT（默认关闭）。 */
   const gptNameDetect = () => readValue('gptNameDetect') === true
-  /** 侧边栏用量卡默认展示哪一家：'chatgpt' 或用量插件里的 provider id。 */
+  /** 侧边栏用量卡默认展示哪一家：'auto'（跟随当前模型）或具体 provider id。 */
   const defaultUsageTab = () => {
     const raw = readValue('defaultUsageTab')
     const value = typeof raw === 'string' ? raw.trim() : ''
-    return value || 'chatgpt'
+    return value || 'auto'
+  }
+
+  /**
+   * 当前「在用」的模型选择（DSH 的 agentDefaultModel）。
+   * 用量卡的 auto 模式据此决定先显示 ChatGPT 还是 DeepSeek。
+   */
+  const currentModelSelection = () => {
+    try {
+      const service = ctx.get('agentDefaultModel')
+      const selection = service && typeof service.currentSelection === 'function' ? service.currentSelection() : null
+      if (!selection) return null
+      return {
+        provider: typeof selection.provider === 'string' ? selection.provider : '',
+        model: typeof selection.model === 'string' ? selection.model : '',
+      }
+    } catch {
+      return null
+    }
   }
   const delegateModel = () => {
     const raw = readValue('deepseekModel')
@@ -938,6 +956,7 @@ export function apply(ctx, config) {
         deepseekModel: delegateModel(),
         gptNameDetect: gptNameDetect(),
         defaultUsageTab: defaultUsageTab(),
+        currentModel: currentModelSelection(),
       },
       session: sessionId ? { ...store.get(sessionId), model: effectiveModel(sessionId) } : null,
     }

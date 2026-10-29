@@ -474,7 +474,8 @@ window.__ModuleLoader__.load({
       const [rows, setRows] = useState([])
       const [dashboard, setDashboard] = useState(null)
       const [tab, setTab] = useState('')
-      const [preferred, setPreferred] = useState('chatgpt')
+      const [preferred, setPreferred] = useState('auto')
+      const [currentModel, setCurrentModel] = useState(null)
       const [busy, setBusy] = useState(false)
       const [clock, setClock] = useState(() => Date.now())
       const mounted = useRef(true)
@@ -515,9 +516,10 @@ window.__ModuleLoader__.load({
         try {
           const data = await loadState('')
           if (!mounted.current) return
-          setPreferred((data.global && data.global.defaultUsageTab) || 'chatgpt')
+          setPreferred((data.global && data.global.defaultUsageTab) || 'auto')
+          setCurrentModel((data.global && data.global.currentModel) || null)
         } catch {
-          // 读不到配置就用 chatgpt
+          // 读不到配置就用 auto
         }
       }, [])
 
@@ -592,10 +594,19 @@ window.__ModuleLoader__.load({
         return list
       }, [rows])
 
+      /** auto 模式：按「当前在用的模型」决定先显示哪一家。 */
+      const autoTabId = useMemo(() => {
+        const provider = (currentModel && currentModel.provider) || ''
+        if (provider === 'openai-codex' || provider === 'chatgpt-codex') return 'chatgpt'
+        if (provider.startsWith('deepseek')) return 'deepseek'
+        return tabs.some((item) => item.id === provider) ? provider : 'chatgpt'
+      }, [currentModel, tabs])
+
+      const preferredId = preferred === 'auto' ? autoTabId : preferred
       const activeId = tabs.some((item) => item.id === tab)
         ? tab
-        : tabs.some((item) => item.id === preferred)
-          ? preferred
+        : tabs.some((item) => item.id === preferredId)
+          ? preferredId
           : 'chatgpt'
       const active = tabs.find((item) => item.id === activeId) || tabs[0]
 
@@ -665,24 +676,44 @@ window.__ModuleLoader__.load({
           const data = dashboard && dashboard.deepseek
           const peak = dashboard && dashboard.peak
           if (!data && !peak) {
-            return [h('div', { key: 'empty', style: usageStyles.hint }, busy ? '正在读取…' : '暂无余额数据')]
+            return [h('div', { key: 'empty', style: { ...usageStyles.hint, fontSize: '11px' } }, busy ? '正在读取…' : '暂无余额数据')]
           }
           const total = data && Number.isFinite(Number(data.total)) ? Number(data.total) : null
           const symbol = data && data.currency === 'CNY' ? '¥' : data && data.currency === 'USD' ? '$' : ''
           const amount = total === null ? '—' : `${symbol}${total.toFixed(2)}`
           const remainMs = peak && Number.isFinite(Number(peak.nextChangeAt)) ? Number(peak.nextChangeAt) - clock : 0
           const countdown = remainMs > 60_000 ? formatCountdown(remainMs) : ''
-          const peakColor = peak && peak.isPeak === false ? '#3f9e6e' : '#d9534f'
+          const cheap = peak ? peak.isPeak === false : false
           return [
-            h('div', { key: 'balance', style: { ...usageStyles.brand, fontSize: '20px' } }, amount),
             h(
               'div',
-              { key: 'peak', style: { ...usageStyles.hint, color: peak ? peakColor : undefined } },
-              peak
-                ? `${peak.label}${countdown ? ` · ${peak.nextLabel} 还有 ${countdown}` : ''}`
-                : '未知时段',
+              { key: 'balance', style: { display: 'flex', alignItems: 'baseline', gap: '6px' } },
+              h('span', { style: { ...usageStyles.brand, fontSize: '19px', letterSpacing: 0 } }, amount),
+              h('span', { style: { ...usageStyles.hint, fontSize: '10px' } }, '余额'),
             ),
-            data && data.error ? h('div', { key: 'err', style: usageStyles.hint }, String(data.error)) : null,
+            h(
+              'div',
+              { key: 'peak', style: { display: 'flex', alignItems: 'center', gap: '5px' } },
+              h('span', {
+                style: {
+                  width: '6px',
+                  height: '6px',
+                  borderRadius: '50%',
+                  flex: 'none',
+                  background: peak ? (cheap ? '#3f9e6e' : '#e0913f') : 'var(--dsw-alias-border-strong, #999)',
+                },
+              }),
+              h(
+                'span',
+                { style: { ...usageStyles.hint, fontSize: '10px' } },
+                peak
+                  ? `${cheap ? '折扣价时段' : '标准价时段'}${countdown ? ` · ${peak.nextLabel}还有 ${countdown}` : ''}`
+                  : '时段未知',
+              ),
+            ),
+            data && data.error
+              ? h('div', { key: 'err', style: { ...usageStyles.hint, fontSize: '10px', opacity: 0.5 } }, String(data.error))
+              : null,
           ]
         }
         const row = item.row
@@ -754,29 +785,11 @@ window.__ModuleLoader__.load({
             active.label,
           ),
           active.kind === 'chatgpt' && planText ? h('span', { style: usageStyles.badge }, planText) : null,
-          active.kind === 'dashboard' && dashboard && dashboard.peak
-            ? h(
-                'span',
-                {
-                  style: {
-                    ...usageStyles.badge,
-                    color: dashboard.peak.isPeak === false ? '#3f9e6e' : '#d9534f',
-                    borderColor: dashboard.peak.isPeak === false ? '#3f9e6e55' : '#d9534f55',
-                  },
-                },
-                dashboard.peak.isPeak === false ? '折扣' : '标准',
-              )
-            : null,
+          active.kind === 'dashboard' ? h('span', { style: usageStyles.badge }, '按量计费') : null,
           h(
             'span',
             { style: { marginLeft: 'auto', fontSize: '10px', opacity: 0.45 } },
-            resetCredits > 0 && active.kind === 'chatgpt'
-              ? `${resetCredits} 次重置`
-              : busy
-                ? '刷新中…'
-                : tabs.length > 1
-                  ? `点卡片切换 (${tabs.length})`
-                  : '',
+            resetCredits > 0 && active.kind === 'chatgpt' ? `${resetCredits} 次重置` : busy ? '刷新中…' : '',
           ),
         ),
         ...bodyFor(active),
@@ -791,8 +804,13 @@ window.__ModuleLoader__.load({
       const [allowLan, setAllowLan] = useState(false)
       const [delegateLight, setDelegateLight] = useState(false)
       const [gptNameDetect, setGptNameDetect] = useState(false)
-      const [defaultUsageTab, setDefaultUsageTab] = useState('chatgpt')
-      const [usageTabOptions, setUsageTabOptions] = useState([{ id: 'chatgpt', label: 'ChatGPT' }])
+      const [defaultUsageTab, setDefaultUsageTab] = useState('auto')
+      const [usageTabOptions, setUsageTabOptions] = useState([
+        { id: 'auto', label: '自动（跟随当前模型）' },
+        { id: 'chatgpt', label: 'ChatGPT' },
+        { id: 'deepseek', label: 'DeepSeek' },
+      ])
+      const [currentModelLabel, setCurrentModelLabel] = useState('')
       const [deepseekModel, setDeepseekModel] = useState('')
       const [deepseekModels, setDeepseekModels] = useState([])
       const [deepseekModelsError, setDeepseekModelsError] = useState('')
@@ -852,6 +870,7 @@ window.__ModuleLoader__.load({
       /** 用量卡「默认展示」的候选：ChatGPT + DeepSeek（本插件自带）+ 其它已配置的 AI。 */
       const loadUsageTabOptions = useCallback(async () => {
         const base = [
+          { id: 'auto', label: '自动（跟随当前模型）' },
           { id: 'chatgpt', label: 'ChatGPT' },
           { id: 'deepseek', label: 'DeepSeek' },
         ]
@@ -1362,7 +1381,7 @@ window.__ModuleLoader__.load({
           h(
             'div',
             { style: styles.hint },
-            '侧边栏底部那张用量卡打开时先显示这一家；点卡片里的其它名字可临时切换，点当前的名字重新读取。',
+            '默认「自动」会跟着当前在用的模型走（用 ChatGPT 就显示 ChatGPT，用 DeepSeek 就显示 DeepSeek）；点卡片里当前那家的名字重新读取，点卡片其它地方切换到下一家。',
           ),
           h(
             'div',
