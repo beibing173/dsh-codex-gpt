@@ -114,7 +114,7 @@ export function createAuthStore({ env = {}, homeDir = () => homedir() } = {}) {
     try {
       mkdirSync(dirname(file), { recursive: true })
       const tmp = `${file}.${process.pid}.tmp`
-      writeFileSync(tmp, JSON.stringify(record, null, 2), 'utf8')
+      writeFileSync(tmp, JSON.stringify(record, null, 2), { encoding: 'utf8', mode: 0o600 })
       renameSync(tmp, file)
     } catch {
       // 写盘失败不影响本进程使用内存凭证
@@ -251,17 +251,38 @@ export async function ensureAccessToken(store) {
   }
 }
 
+/** HTML 转义：回调页会回显 URL 参数（如 error），必须转义防反射型 XSS。 */
+export function escapeHtml(value) {
+  return String(value).replace(/[&<>"']/g, (ch) => {
+    switch (ch) {
+      case '&':
+        return '&amp;'
+      case '<':
+        return '&lt;'
+      case '>':
+        return '&gt;'
+      case '"':
+        return '&quot;'
+      default:
+        return '&#39;'
+    }
+  })
+}
+
 /** 回调页 HTML。 */
 function respondHtml(res, status, title, detail) {
-  const body = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>${title}</title>
+  const safeTitle = escapeHtml(title)
+  const safeDetail = escapeHtml(detail)
+  const body = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>${safeTitle}</title>
 <style>body{font-family:system-ui,-apple-system,"Segoe UI",sans-serif;background:#0b1b3a;color:#e8f0ff;display:flex;align-items:center;justify-content:center;height:100vh;margin:0}
 .card{text-align:center;padding:36px 44px;border-radius:18px;background:rgba(255,255,255,.06);border:1px solid rgba(124,199,255,.35)}
 h1{margin:0 0 10px;font-size:22px}p{margin:0;opacity:.75;font-size:14px;line-height:1.7}</style></head>
-<body><div class="card"><h1>${title}</h1><p>${detail}</p></div></body></html>`
+<body><div class="card"><h1>${safeTitle}</h1><p>${safeDetail}</p></div></body></html>`
   res.writeHead(status, {
     'Content-Type': 'text/html; charset=utf-8',
     'Content-Length': String(Buffer.byteLength(body)),
     'Cache-Control': 'no-store',
+    'X-Content-Type-Options': 'nosniff',
   })
   res.end(body)
 }

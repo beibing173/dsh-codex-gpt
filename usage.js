@@ -272,7 +272,7 @@ async function refreshAuth(auth, signal) {
     if (typeof auth.path === 'string' && auth.path) {
       try {
         const tmp = `${auth.path}.dsh-codex.tmp`
-        writeFileSync(tmp, JSON.stringify(next, null, 2), 'utf8')
+        writeFileSync(tmp, JSON.stringify(next, null, 2), { encoding: 'utf8', mode: 0o600 })
         renameSync(tmp, auth.path)
       } catch {
         // 写回失败：本进程继续用新 token

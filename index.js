@@ -32,6 +32,9 @@ export const inject = ['tools', 'systemPrompt', 'webServer', 'llm', 'attachments
 export const ROUTE = '/dsh-codex-api'
 /** 单次 Codex 调用超时（毫秒）。 */
 const CODEX_TIMEOUT_MS = 240_000
+/** codex 工具入参上限：防止超大文本导致上游费用与内存问题。 */
+const MAX_TASK_CHARS = 100_000
+const MAX_CONTEXT_CHARS = 400_000
 /** 会话状态文件里最多保留的会话条数。 */
 const MAX_SESSIONS = 400
 /** 提示策略段的 order：紧跟人格段之后。 */
@@ -400,9 +403,9 @@ export function apply(ctx, config) {
         ].join('\n')
       }
 
-      const task = typeof args?.task === 'string' ? args.task.trim() : ''
+      const task = typeof args?.task === 'string' ? args.task.trim().slice(0, MAX_TASK_CHARS) : ''
       if (!task) return 'codex 调用缺少 task：请把要分析/构建的任务写进 task 参数。'
-      const context = typeof args?.context === 'string' ? args.context.trim() : ''
+      const context = typeof args?.context === 'string' ? args.context.trim().slice(0, MAX_CONTEXT_CHARS) : ''
       const mode = args?.mode === 'build' ? 'build' : 'analyze'
       const requested = typeof args?.model === 'string' ? args.model.trim() : ''
       const model = requested || effectiveModel(sessionId)
@@ -505,7 +508,7 @@ export function apply(ctx, config) {
     }
   }
 
-  /** 请求守卫：回环 / Origin / Sec-Fetch-Site / Host / Content-Type。 */
+  /** 请求守卫：回环 / Origin / Sec-Fetch-Site / Host / Content-Type / 局域网只读。 */
   const rejectReason = (req) => {
     if (!isLoopback(req) && !allowLanAccess()) return '仅允许本机访问；如需局域网访问请在设置中开启 allowLanAccess。'
     const origin = req.headers.origin
@@ -513,13 +516,22 @@ export function apply(ctx, config) {
     if (origin && expected && origin !== expected) return '跨站请求被拒绝。'
     const site = req.headers['sec-fetch-site']
     if (site && site !== 'same-origin' && site !== 'none') return '跨站请求被拒绝。'
-    if (!allowLanAccess() && expected) {
-      try {
-        const expectedHost = new URL(expected).host
-        if (req.headers.host && String(req.headers.host) !== expectedHost) return 'Host 不匹配。'
-      } catch {
-        // expected 不是合法 URL 时跳过 Host 校验
+    if (!allowLanAccess()) {
+      // 即使 getOrigin() 暂时不可用也必须校验 Host，否则 DNS rebinding 可绕过同源限制。
+      const host = String(req.headers.host || '').toLowerCase()
+      const hostname = host.replace(/:\d+$/, '')
+      const loopbackHosts = ['127.0.0.1', 'localhost', '[::1]', '::1']
+      if (host && !loopbackHosts.includes(hostname)) return 'Host 不匹配。'
+      if (expected && host) {
+        try {
+          if (host !== new URL(expected).host.toLowerCase()) return 'Host 不匹配。'
+        } catch {
+          // expected 不是合法 URL 时已由上面的回环 Host 校验兜底
+        }
       }
+    }
+    if (allowLanAccess() && req.method !== 'GET') {
+      return '局域网模式仅允许只读查询；登录/登出/兑换重置卡等操作请在运行 DSH 的本机执行。'
     }
     if (req.method === 'POST' && !/^application\/json\b/i.test(String(req.headers['content-type'] || ''))) {
       return 'POST 需要 application/json。'

@@ -426,6 +426,33 @@ test('跨站请求被拒绝（Origin / Content-Type / 非回环）', async () =>
   assert.equal(lan.status, 403)
 })
 
+test('局域网模式：只读放行，登录/兑换等写操作拒绝', async () => {
+  writeAuth()
+  const harness = createHarness()
+  const enable = await callApi(harness, {
+    method: 'POST',
+    body: { op: 'setGlobal', patch: { allowLanAccess: true } },
+  })
+  assert.equal(enable.status, 200)
+  const read = await callApi(harness, { remoteAddress: '192.168.1.9' })
+  assert.equal(read.status, 200)
+  const write = await callApi(harness, {
+    method: 'POST',
+    remoteAddress: '192.168.1.9',
+    body: { op: 'consumeReset' },
+  })
+  assert.equal(write.status, 403)
+  const login = await callApi(harness, { method: 'POST', remoteAddress: '192.168.1.9', body: { op: 'login' } })
+  assert.equal(login.status, 403)
+})
+
+test('Host 校验：getOrigin 不可用时仍拒绝非回环 Host（防 DNS rebinding）', async () => {
+  writeAuth()
+  const harness = createHarness()
+  const rebound = await callApi(harness, { headers: { host: 'evil.example' } })
+  assert.equal(rebound.status, 403)
+})
+
 test('外网连通性检查：3 条链路并行探测', async (t) => {
   const original = globalThis.fetch
   t.after(() => {

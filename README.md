@@ -132,7 +132,10 @@ node --test "test/codex.test.mjs" "test/usage.test.mjs" "test/host.test.mjs" "te
 ## 安全边界
 
 - 状态路由 `/dsh-codex-api` 默认**仅接受本机回环地址**，并校验 `Origin`、`Sec-Fetch-Site`、`Host` 与 `Content-Type: application/json`；
-- **token 不会**通过状态路由回传给浏览器；
+- `Host` 校验不依赖 `getOrigin()` 是否可用：即使端口来源信息缺失，非回环 Host 也会被拒绝（防 DNS rebinding）；
+- `allowLanAccess: true` 时局域网设备**只能只读查询**；登录、登出、兑换重置卡等写操作必须在运行 DSH 的本机执行；
+- OAuth 回调页回显的 URL 参数（如 `error`）全部做 HTML 转义，防止反射型 XSS；
+- 凭证文件以 `0600` 权限写入（POSIX 系统），token **不会**通过状态路由回传给浏览器；
 - 会话授权**不继承**给子代理（subagent）或 fork 出的新会话；
 - 未登录 / 未授权时不会发起任何 OpenAI 请求。
 
