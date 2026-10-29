@@ -777,6 +777,7 @@ window.__ModuleLoader__.load({
       const [usage, setUsage] = useState(null)
       const [rows, setRows] = useState([])
       const [connectPoints, setConnectPoints] = useState({})
+      const [connectDiag, setConnectDiag] = useState('')
       const [dashboard, setDashboard] = useState(null)
       const [tab, setTab] = useState('')
       const [manualKey, setManualKey] = useState('')
@@ -829,6 +830,7 @@ window.__ModuleLoader__.load({
 
       /** 读取 Trae / WorkBuddy 的积分（各自的只读 usage 端点，未安装/未登录就跳过）。 */
       const loadConnectPoints = useCallback(async () => {
+        const diag = []
         const seq = ++connectSeq.current
         const results = await Promise.all(
           CONNECT_PLUGINS.map(async (plugin) => {
@@ -839,9 +841,14 @@ window.__ModuleLoader__.load({
                 headers: { Accept: 'application/json' },
                 cache: 'no-store',
               })
-              if (!response.ok) return [plugin.id, null]
+              if (!response.ok) {
+                diag.push(`${plugin.id}:HTTP ${response.status}`)
+                return [plugin.id, null]
+              }
               const doc = await response.json()
-              return [plugin.id, parseConnectPoints(plugin.id, doc)]
+                const parsed = parseConnectPoints(plugin.id, doc)
+                diag.push(parsed ? `${plugin.id}:ok` : `${plugin.id}:empty`)
+                return [plugin.id, parsed]
             } catch {
               return [plugin.id, null]
             }
@@ -853,6 +860,7 @@ window.__ModuleLoader__.load({
           if (value) next[id] = value
         }
         setConnectPoints(next)
+        setConnectDiag(diag.join(' · '))
       }, [])
 
       /**
@@ -1021,7 +1029,10 @@ window.__ModuleLoader__.load({
         if (provider === 'openai-codex' || provider === 'chatgpt-codex') return 'chatgpt'
         if (provider.startsWith('deepseek')) return 'deepseek'
         // Trae / WorkBuddy：按 provider 找到对应积分卡（含 -global / -enterprise 变体）。
-        const connect = CONNECT_PLUGINS.find((plugin) => plugin.providers.includes(provider))
+        // provider 可能是 workbuddy / workbuddy-global / trae / trae-enterprise，两种都认。
+        const connect = CONNECT_PLUGINS.find(
+          (plugin) => plugin.providers.includes(provider) || provider.startsWith(plugin.id),
+        )
         if (connect && tabs.some((item) => item.id === connect.id)) return connect.id
         // 其它（含不支持/不认识的 provider）：有对应余额卡就用它，否则退 DeepSeek 余额。
         // 只有确实在用本插件的 ChatGPT 时才显示 ChatGPT 限额，避免默认停在 GPT。
@@ -1243,7 +1254,10 @@ window.__ModuleLoader__.load({
         {
           role: 'status',
           onClick: () => void cycleTab(),
-          title: L(`点击卡片切换到下一家（当前 ${active.label}）`, `Click to switch to the next provider (current: ${active.label})`),
+          title: L(
+            `点击卡片切换到下一家（当前 ${active.label}）`,
+            `Click to switch to the next provider (current: ${active.label})`,
+          ) + `\nprovider=${(sessionModel && sessionModel.provider) || '(none)'} · points=${Object.keys(connectPoints || {}).join(',') || '(none)'}` + (connectDiag ? ` · ${connectDiag}` : ''),
           style: usageStyles.card,
         },
         h(
