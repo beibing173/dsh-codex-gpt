@@ -19,6 +19,8 @@
     "oauth.js",
     "llm-adapter.js",
     "client.js",
+    "screenshots.json",
+    "assets/*.webp",
     "cordis.patch.yml",
     "locale/*.json",
     "icon.svg",

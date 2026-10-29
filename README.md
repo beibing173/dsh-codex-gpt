@@ -4,6 +4,8 @@
 
 全程使用 **ChatGPT 订阅额度**，走 OpenAI 官方 OAuth 登录，不需要填写 API Key，不产生 OpenAI API 计费。
 
+![设置页：OpenAI 账号、Codex 设置、轻任务委派开关与重置卡](assets/screenshot-1.webp)
+
 ---
 
 ## 特性
