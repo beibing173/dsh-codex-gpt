@@ -172,10 +172,12 @@ export function createCodexGptAdapter(opts) {
 
     let found
     try {
-      const credential = await getCredential()
+      // 用缓存的目录解析：选中模型后 DSH 会立刻解析一次，这里绝不能再等网络，
+      // 否则切换模型时会出现明显卡顿/显示不刷新。
+      const credential = await getCredential({ noRefresh: true })
       throwIfAborted(signal)
       if (credential?.accessToken) {
-        const models = normalizeModels(await fetchModels(credential))
+        const models = normalizeModels(await loadModels(credential))
         throwIfAborted(signal)
         found = models.find((candidate) => candidate.slug === modelId)
       }

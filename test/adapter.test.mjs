@@ -256,3 +256,25 @@ test('listModels: 冷启动上游卡住时按超时返回兜底，不阻塞模�
   assert.deepEqual(models.map((m) => m.id), ['gpt-5.6-sol'])
   assert.ok(elapsed < 3000, `冷启动必须有上限，实际 ${elapsed}ms`)
 })
+
+test('resolveModel: 复用目录缓存，选完模型不重打上游', async () => {
+  let calls = 0
+  const adapter = createCodexGptAdapter({
+    getCredential: async () => ({ accessToken: 'at' }),
+    fetchModels: async () => {
+      calls += 1
+      return [{ slug: 'gpt-9-sol', displayName: 'GPT-9' }]
+    },
+    fallbackModel: 'gpt-5.6-sol',
+  })
+  await adapter.listModels(PROVIDER_ID)
+  assert.equal(calls, 1)
+
+  const started = Date.now()
+  const resolved = await adapter.resolveModel(PROVIDER_ID, 'gpt-9-sol')
+  const elapsed = Date.now() - started
+  assert.equal(resolved.id, 'gpt-9-sol')
+  assert.equal(resolved.name, 'GPT-9')
+  assert.equal(calls, 1, '解析模型应命中缓存，不应再次请求上游')
+  assert.ok(elapsed < 50, `解析应瞬时完成，实际 ${elapsed}ms`)
+})
