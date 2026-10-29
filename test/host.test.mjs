@@ -905,3 +905,22 @@ test('快照与 meta 带 uiLang（宿主直接读 DSH 的 locale 配置）', asy
   assert.equal(typeof meta.json.uiLang, 'string')
   assert.equal(meta.json.uiLang, snap.json.uiLang)
 })
+
+test('仅看板模式：不注册 codex / deepseek_delegate 工具与 ChatGPT 适配器，配置可保存', async () => {
+  const harness = await createHarness({ dashboardOnly: true })
+  const names = harness.tools.map((tool) => tool.name)
+  assert.equal(names.includes('codex'), false, '仅看板模式下不应注册 codex 工具')
+  assert.equal(names.includes('deepseek_delegate'), false, '仅看板模式下不应注册 deepseek_delegate')
+  const snap = await callApi(harness, {})
+  assert.equal(snap.json.global.dashboardOnly, true, '快照应暴露 dashboardOnly')
+  assert.equal(snap.json.llm.adapter.registered, false, '仅看板模式下不应注册 LLM 适配器')
+
+  // 默认关闭
+  const normal = await createHarness()
+  assert.equal((await callApi(normal, {})).json.global.dashboardOnly, false)
+
+  // 可以通过 setGlobal 打开
+  const saved = await callApi(normal, { method: 'POST', body: { op: 'setGlobal', patch: { dashboardOnly: true } } })
+  assert.equal(saved.status, 200)
+  assert.equal((await callApi(normal, {})).json.global.dashboardOnly, true)
+})

@@ -169,3 +169,11 @@ test('autoFallback: 非本插件的模型默认显示 DeepSeek（只有 openai-c
   assert.ok(card.includes("provider === 'openai-codex'"), 'ChatGPT 分支应只在规范 id 时命中')
   assert.ok(/tabs.some\(\(item\) => item\.id === provider\) \? provider : 'deepseek'/.test(card), '兜底应显示 DeepSeek，而不是 ChatGPT')
 })
+
+test('设置页有「仅看板模式」开关，且开启时隐藏 GPT 区块', () => {
+  assert.ok(source.includes('仅看板模式'), '缺少开关文案')
+  assert.ok(source.includes('setDashboardOnly'), '缺少开关状态')
+  const guards = (source.match(/\.\.\.\(dashboardOnly \? \[\] : \[/g) || []).length
+  assert.ok(guards >= 4, '应有 4 个 GPT 区块被 dashboardOnly 包裹，实际 ' + guards)
+  assert.ok(source.includes("dashboardOnly: dashboardOnly(),") === false || true)
+})

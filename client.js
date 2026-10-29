@@ -1292,6 +1292,7 @@ window.__ModuleLoader__.load({
       const [delegateLight, setDelegateLight] = useState(false)
       const [gptNameDetect, setGptNameDetect] = useState(false)
       const [defaultUsageTab, setDefaultUsageTab] = useState('auto')
+      const [dashboardOnly, setDashboardOnly] = useState(false)
       const [usageTabOptions, setUsageTabOptions] = useState([
         { id: 'auto', label: L('自动（跟随当前模型）', 'Auto (follow current model)') },
         { id: 'deepseek', label: 'DeepSeek' },
@@ -1401,6 +1402,7 @@ window.__ModuleLoader__.load({
             setDelegateLight(data.global.delegateLightTasks === true)
             setGptNameDetect(data.global.gptNameDetect === true)
             setDefaultUsageTab(data.global.defaultUsageTab || 'chatgpt')
+            setDashboardOnly(data.global.dashboardOnly === true)
             setDeepseekModel(data.global.deepseekModel || '')
           }
           if (data.auth && data.auth.loggedIn) {
@@ -1544,6 +1546,7 @@ window.__ModuleLoader__.load({
               deepseekModel,
               gptNameDetect,
               defaultUsageTab,
+              dashboardOnly,
             },
           })
           setNotice(L('已保存并生效。', 'Saved and applied.'))
@@ -1552,7 +1555,7 @@ window.__ModuleLoader__.load({
         } finally {
           setBusy(false)
         }
-      }, [defaultModel, autoConsult, allowLan, delegateLight, deepseekModel, gptNameDetect, defaultUsageTab])
+      }, [defaultModel, autoConsult, allowLan, delegateLight, deepseekModel, gptNameDetect, defaultUsageTab, dashboardOnly])
 
       const checkNetwork = useCallback(async () => {
         setChecking(true)
@@ -1631,6 +1634,27 @@ window.__ModuleLoader__.load({
       return h(
         'div',
         { style: styles.page },
+        // ── 仅看板模式 ───────────────────────────────────────────────
+        h(
+          'div',
+          { style: styles.card },
+          h('div', { style: styles.title }, '🦭 仅看板模式'),
+          h(
+            'div',
+            { style: styles.row },
+            h('input', {
+              type: 'checkbox',
+              checked: dashboardOnly,
+              onChange: (event) => setDashboardOnly(event.target.checked),
+            }),
+            h('span', { style: styles.label }, '只保留用量看板'),
+          ),
+          h(
+            'div',
+            { style: styles.hint },
+            '开启后关闭 ChatGPT 模型、codex 工具、会话授权与凭证同步，设置页只留看板相关项。默认关闭；保存后需禁用→启用插件完全生效。',
+          ),
+        ),
         // ── 插件版本 ────────────────────────────────────────────────
         h(
           'div',
@@ -1639,6 +1663,7 @@ window.__ModuleLoader__.load({
           h('span', { style: { opacity: 0.6 } }, t('version')),
         ),
         // ── OpenAI 账号 ──────────────────────────────────────────────
+        ...(dashboardOnly ? [] : [
         h(
           'div',
           { style: styles.card },
@@ -1740,7 +1765,9 @@ window.__ModuleLoader__.load({
               )
             : null,
         ),
+        ]),
         // ── Codex 设置 ──────────────────────────────────────────────
+        ...(dashboardOnly ? [] : [
         h(
           'div',
           { style: styles.card },
@@ -1893,7 +1920,9 @@ window.__ModuleLoader__.load({
           notice ? h('div', { style: styles.notice }, notice) : null,
           error ? h('div', { style: styles.error }, error) : null,
         ),
+        ]),
         // ── 重置额度（重置卡） ──────────────────────────────────────
+        ...(dashboardOnly ? [] : [
         h(
           'div',
           { style: styles.card },
@@ -1949,7 +1978,9 @@ window.__ModuleLoader__.load({
             L('重置会立即恢复 5 小时 / 每周的限流窗口，操作不可撤销；只在额度确实受限时使用。', 'A reset immediately restores the 5-hour / weekly limits and cannot be undone; only use it when you are actually rate-limited.'),
           ),
         ),
+        ]),
         // ── 使用方式 ────────────────────────────────────────────────
+        ...(dashboardOnly ? [] : [
         h(
           'div',
           { style: styles.card },
@@ -1959,6 +1990,7 @@ window.__ModuleLoader__.load({
           h('div', { style: styles.hint }, L('3. 回到对话，点输入框左侧胶囊按钮授权当前会话（变蓝 = 已授权）。按钮名随当前模型变化：本插件 ChatGPT 时显示「DeepSeek」，其他模型时显示「ChatGPT」。', '3. Back in the conversation, click the capsule button left of the input to authorize this session (blue = authorized). Its label follows the current model: "DeepSeek" for this plugin\'s ChatGPT, otherwise "ChatGPT".')),
           h('div', { style: styles.hint }, L('4. 之后遇到高难度任务，DeepSeek 会自主调用 ChatGPT；未授权的会话不产生任何额度消耗。', '4. For hard tasks, DeepSeek then calls ChatGPT on its own; unauthorized sessions never consume quota.')),
         ),
+        ]),
       )
     }
 
@@ -1994,8 +2026,20 @@ window.__ModuleLoader__.load({
             return null
           }
         })()
-        slots.inject('conversation.input.left', () =>
-          slots.register(
+        // 输入框胶囊：仅看板模式开启时要能把它摘掉，所以保留 register 的句柄。
+        let toggleHandle = null
+        const disposeToggle = () => {
+          const handle = toggleHandle
+          toggleHandle = null
+          try {
+            if (handle && typeof handle.dispose === 'function') handle.dispose()
+            else if (typeof handle === 'function') handle()
+          } catch {
+            // 摘不掉也不影响其它 UI
+          }
+        }
+        slots.inject('conversation.input.left', () => {
+          toggleHandle = slots.register(
             {
               name: 'conversation.input.left',
               id: 'codex-toggle',
@@ -2013,8 +2057,21 @@ window.__ModuleLoader__.load({
             },
             (props) =>
               h(CodexToggle, { ...(props || {}), locale: (props && props.locale) || localeService }),
-          ),
-        )
+          )
+          return toggleHandle
+        })
+        // 读一次配置：仅看板模式下不保留输入框胶囊（GPT 相关 UI 全部让位给看板）。
+        if (typeof fetch === 'function') {
+          Promise.resolve()
+            .then(() => fetch(API + '?meta=1', { headers: { Accept: 'application/json' }, cache: 'no-store' }))
+            .then((response) => (response && response.ok ? response.json() : null))
+            .then((data) => {
+              if (data && data.dashboardOnly === true) disposeToggle()
+            })
+            .catch(() => {
+              // 读不到就保持默认（胶囊留着，用户可再打开设置检查）
+            })
+        }
         slots.inject('settings.section', () =>
           slots.register(
             {

@@ -107,6 +107,13 @@ export const Config = z.object({
       '保险开关：开启后，若其他 provider 提供的模型 id 也形如 gpt-* / o3-*，输入框胶囊同样按「GPT」识别（显示 DeepSeek）。默认关闭，只认本插件的 ChatGPT provider。',
     )
     .volatile(),
+  dashboardOnly: z
+    .boolean()
+    .default(false)
+    .description(
+      '仅看板模式：开启后不注册 ChatGPT 模型、codex 工具、会话授权策略与用量凭证同步，只保留侧边栏看板。切换后需禁用→启用插件才完全生效。',
+    )
+    .volatile(),
   defaultUsageTab: z
     .string()
     .default('auto')
@@ -389,6 +396,8 @@ export function apply(ctx, config) {
   const delegateLightTasks = () => readValue('delegateLightTasks') === true
   /** 保险开关：是否按模型名把其他 provider 的 GPT 模型也算作 GPT（默认关闭）。 */
   const gptNameDetect = () => readValue('gptNameDetect') === true
+  /** 仅看板模式：关闭所有 GPT/Codex 功能，只留用量看板（默认关闭）。 */
+  const dashboardOnly = () => readValue('dashboardOnly') === true
   /** 侧边栏用量卡默认展示哪一家：'auto'（跟随当前模型）或具体 provider id。 */
   const defaultUsageTab = () => {
     const raw = readValue('defaultUsageTab')
@@ -747,6 +756,7 @@ export function apply(ctx, config) {
     },
   }
 
+  if (!dashboardOnly()) {
   ctx.tools.register({
     name: 'codex',
     description:
@@ -860,6 +870,7 @@ export function apply(ctx, config) {
       }
     },
   })
+  }
 
   // ── 1b. DeepSeek 轻任务委派（GPT 模式下把轻任务交 DeepSeek V4.1 收尾） ──────
   const deepseekProvider = () => {
@@ -910,6 +921,7 @@ export function apply(ctx, config) {
     return { text: text.trim(), provider, model }
   }
 
+  if (!dashboardOnly()) {
   ctx.tools.register({
     name: 'deepseek_delegate',
     description:
@@ -950,6 +962,7 @@ export function apply(ctx, config) {
       }
     },
   })
+  }
 
   // ── 2. 每会话提示策略：随组装上下文求值，开关切换后下一轮即生效 ─────────────
   const scopeSessionId = (context) => {
@@ -980,6 +993,7 @@ export function apply(ctx, config) {
     )
   }
 
+  if (!dashboardOnly()) {
   ctx.systemPrompt.section({
     name: 'dsh-codex-policy',
     order: POLICY_ORDER,
@@ -989,8 +1003,10 @@ export function apply(ctx, config) {
       return policyFor(sessionId)
     },
   })
+  }
 
   // ── 2b. 轻任务委派策略：仅当开关开启时提示 GPT 把轻任务交给 DeepSeek ──────
+  if (!dashboardOnly()) {
   ctx.systemPrompt.section({
     name: 'dsh-codex-delegate',
     order: POLICY_ORDER + 10,
@@ -1005,6 +1021,7 @@ export function apply(ctx, config) {
       ].join('\n')
     },
   })
+  }
 
   // ── 3. 设置页：关闭自动生成表单（本插件自带 Codex 设置页） ─────────────────
   try {
@@ -1061,7 +1078,7 @@ export function apply(ctx, config) {
 
   const snapshot = (sessionId, credential) => {
     // 读快照是低频动作（设置页/胶囊轮询），在这里节流补一次令牌同步，不额外起定时器。
-    void maybeSyncUsage()
+    if (!dashboardOnly()) void maybeSyncUsage()
     const auth = authSnapshot(credential)
     let llmProviders = []
     try {
@@ -1083,6 +1100,7 @@ export function apply(ctx, config) {
         deepseekModel: delegateModel(),
         gptNameDetect: gptNameDetect(),
         defaultUsageTab: defaultUsageTab(),
+        dashboardOnly: dashboardOnly(),
         currentModel: currentModelSelection(),
       },
       session: sessionId ? { ...store.get(sessionId), model: effectiveModel(sessionId) } : null,
@@ -1115,6 +1133,7 @@ export function apply(ctx, config) {
       if (typeof patch.allowLanAccess === 'boolean') next.allowLanAccess = patch.allowLanAccess
       if (typeof patch.delegateLightTasks === 'boolean') next.delegateLightTasks = patch.delegateLightTasks
       if (typeof patch.gptNameDetect === 'boolean') next.gptNameDetect = patch.gptNameDetect
+      if (typeof patch.dashboardOnly === 'boolean') next.dashboardOnly = patch.dashboardOnly
       if (typeof patch.defaultUsageTab === 'string') {
         next.defaultUsageTab = patch.defaultUsageTab.trim().slice(0, 100)
       }
@@ -1229,6 +1248,7 @@ export function apply(ctx, config) {
             uiLang: readUiLocale(),
             currentModel: currentModelSelection(),
             defaultUsageTab: redacted ? '' : defaultUsageTab(),
+            dashboardOnly: dashboardOnly(),
           })
           return
         }
@@ -1377,6 +1397,8 @@ export function apply(ctx, config) {
   try {
     ctx.effect(() => {
       try {
+        // 仅看板模式：不注册 ChatGPT 模型，模型选择器里就当没有这个插件。
+        if (dashboardOnly()) return
         // 迁移：老版本存下的 `chatgpt-codex` 默认选择改写成规范 id，老会话照样能发消息。
         try {
           const adm = ctx.get('agentDefaultModel')
@@ -1438,7 +1460,7 @@ export function apply(ctx, config) {
   try {
     ctx.effect(() => {
       const timer = setTimeout(() => {
-        void maybeSyncUsage()
+        if (!dashboardOnly()) void maybeSyncUsage()
       }, 1200)
       if (timer && typeof timer.unref === 'function') timer.unref()
       return () => clearTimeout(timer)
