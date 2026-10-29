@@ -138,12 +138,15 @@ node --test "test/codex.test.mjs" "test/usage.test.mjs" "test/host.test.mjs" "te
 ## 安全边界
 
 - 状态路由 `/dsh-codex-api` 默认**仅接受本机回环地址**，并校验 `Origin`、`Sec-Fetch-Site`、`Host` 与 `Content-Type: application/json`；
+- 同源判断兼容 `127.0.0.1` / `localhost` / `[::1]` 等本机别名（协议与端口需一致），外部域名伪造 `Origin` 一律拒绝；
+- 写操作（授权、登录、登出、兑换重置卡、改配置）**必须携带同源 `Origin`**；缺失 `Origin` 或无法确定本机 origin 时直接拒绝；
+- 请求若携带 `X-Forwarded-For` / `X-Real-IP` / `Forwarded` / `CF-Connecting-IP`，一律按**远程**处理，不再享受本机权限；
 - `Host` 校验不依赖 `getOrigin()` 是否可用：即使端口来源信息缺失，非回环 Host 也会被拒绝（防 DNS rebinding）；
 - `allowLanAccess: true` 时局域网设备**只能只读查询**；登录、登出、兑换重置卡等写操作必须在运行 DSH 的本机执行；
-- OAuth 回调页回显的 URL 参数（如 `error`）全部做 HTML 转义，防止反射型 XSS；
+- OAuth 回调页回显的 URL 参数（如 `error`）全部做 HTML 转义，防止反射型 XSS；回调**先校验 `state`** 再处理错误参数；
 - 凭证文件以 `0600` 权限写入（POSIX 系统），token **不会**通过状态路由回传给浏览器；
 - 插件只读 Codex CLI 的 `auth.json`，**不替其他应用刷新或轮换**其 token；
-- 局域网模式下的只读数据已脱敏（不返回邮箱、姓名、订阅起止、用量、模型与重置卡）；
+- 局域网模式下的只读数据已脱敏（不返回邮箱、姓名、订阅起止、用量、模型目录、配置细节与重置卡）；
 - 会话授权**不继承**给子代理（subagent）或 fork 出的新会话；
 - 未登录 / 未授权时不会发起任何 OpenAI 请求。
 
@@ -153,7 +156,14 @@ node --test "test/codex.test.mjs" "test/usage.test.mjs" "test/host.test.mjs" "te
 
 - 依赖 ChatGPT 后端的若干**非公开接口**（`codex/responses`、`codex/models`、`wham/usage`、`wham/rate-limit-reset-credits`），OpenAI 调整协议时可能需要适配；
 - `codex` 工具与模型列表均受账号订阅额度约束，额度用尽需等待重置周期或使用重置卡；
-- OAuth 回调固定占用本机 `1455` 端口。
+- OAuth 回调固定占用本机 `1455` 端口，且只监听 `127.0.0.1`；若浏览器把 `localhost` 解析到 `::1`，回调可能连不上，请改用 `127.0.0.1` 打开回调地址；
+- **不要在 DSH 前面挂反向代理**：`socket.remoteAddress` 会被统一识别为本机，本机隔离会被弱化（本插件已对转发头做降级处理，但根本方案是仅本机暴露）；
+- 用量缓存未按账号隔离：登出会清缓存，但**切换账号后 60 秒内**卡片仍可能显示上一账号的限额；
+- token 刷新为单飞，但请求收到 `401` 时不会强制刷新（凭证被服务端提前失效时需重新登录）；
+- 模型目录与用量请求未做单飞，并发触发时可能重复请求上游；
+- 多个 DSH 实例共享同一个 `$DSH_HOME` 时，会话授权状态是整文件覆写，可能互相覆盖；
+- 浏览器侧 UI 文案目前硬编码中文，未接入 `ctx.locale` 本地化；
+- 少量无障碍细节不完整（开关无键盘操作、部分可点击元素缺少按钮语义）。
 
 ---
 
