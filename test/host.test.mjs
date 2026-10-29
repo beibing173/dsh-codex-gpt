@@ -64,7 +64,7 @@ function clearAuth() {
 before(async () => {
   rmSync(sandbox, { recursive: true, force: true })
   mkdirSync(join(sandbox, 'node_modules', '@deepseek-ai', 'schemastery'), { recursive: true })
-  for (const file of ['index.js', 'codex.js', 'usage.js', 'network.js', 'oauth.js', 'llm-adapter.js']) {
+  for (const file of ['index.js', 'codex.js', 'usage.js', 'network.js', 'oauth.js', 'llm-adapter.js', 'deepseek.js']) {
     copyFileSync(join(packageDir, file), join(sandbox, file))
   }
   writeFileSync(join(sandbox, 'package.json'), JSON.stringify({ type: 'module' }))
@@ -780,4 +780,24 @@ test('登录后把 OAuth 令牌同步到用量类插件的凭证引用', async (
   assert.equal(writes.length, before, '模型列表不应触发凭证写入')
 
   clearAuth()
+})
+
+test('用量卡默认展示项：默认 ChatGPT，可通过 setGlobal 改成其它 AI', async () => {
+  writeAuth()
+  const harness = createHarness()
+  const before = await callApi(harness, {})
+  assert.equal(before.json.global.defaultUsageTab, 'chatgpt')
+
+  const saved = await callApi(harness, {
+    method: 'POST',
+    body: { op: 'setGlobal', patch: { defaultUsageTab: 'deepseek-account' } },
+  })
+  assert.equal(saved.status, 200)
+  const after = await callApi(harness, {})
+  assert.equal(after.json.global.defaultUsageTab, 'deepseek-account')
+
+  // 清空回到默认值
+  await callApi(harness, { method: 'POST', body: { op: 'setGlobal', patch: { defaultUsageTab: '' } } })
+  const reset = await callApi(harness, {})
+  assert.equal(reset.json.global.defaultUsageTab, 'chatgpt')
 })

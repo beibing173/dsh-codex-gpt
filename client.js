@@ -14,7 +14,7 @@ window.__ModuleLoader__.load({
   id: 'dsh-codex-gpt',
   factory: (require) => {
     const React = require('react')
-    const { useCallback, useEffect, useRef, useState, useSyncExternalStore } = React
+    const { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } = React
     const h = React.createElement
 
     const API = '/dsh-codex-api'
@@ -399,6 +399,16 @@ window.__ModuleLoader__.load({
       return `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`
     }
 
+    /** 毫秒 → 「x 小时 y 分」/「y 分钟」。 */
+    function formatCountdown(ms) {
+      const total = Math.max(0, Math.round(Number(ms) / 60_000))
+      if (total <= 0) return '不到 1 分钟'
+      const hours = Math.floor(total / 60)
+      const minutes = total % 60
+      if (hours > 0) return minutes > 0 ? `${hours} 小时 ${minutes} 分` : `${hours} 小时`
+      return `${minutes} 分钟`
+    }
+
     const usageStyles = {
       card: {
         display: 'flex',
@@ -436,51 +446,186 @@ window.__ModuleLoader__.load({
     }
 
     /** 侧边栏底部 Codex 用量卡片；拿不到数据或侧栏收起时不渲染。 */
+    /** 侧边栏底部用量卡片：可在 ChatGPT / DeepSeek / 其它已配置的 AI 之间切换。 */
+    const USAGE_ACCOUNTS_PATH = '/api/deepseek-usage/accounts'
+    const USAGE_TAB_KEY = 'dsh-codex-usage-tab'
+    /** provider id → 展示名（缺省用接口返回的 displayName）。 */
+    const USAGE_LABELS = {
+      chatgpt: 'ChatGPT',
+      'openai-codex': 'ChatGPT',
+      'deepseek-account': 'DeepSeek',
+      deepseek: 'DeepSeek',
+      'deepseek-official': 'DeepSeek',
+      moonshotai: 'Kimi',
+      'kimi-coding': 'Kimi',
+      zai: 'GLM',
+      openrouter: 'OpenRouter',
+      minimax: 'MiniMax',
+      'minimax-cn': 'MiniMax CN',
+      opencode: 'OpenCode',
+      'opencode-go': 'OpenCode Go',
+      anthropic: 'Claude',
+    }
+    const usageLabelOf = (row) => USAGE_LABELS[row.id] || row.displayName || row.id
+
     function CodexUsageCard(props) {
       const wide = !(props && props.wide === false)
       const [usage, setUsage] = useState(null)
+      const [rows, setRows] = useState([])
+      const [dashboard, setDashboard] = useState(null)
+      const [tab, setTab] = useState('')
+      const [preferred, setPreferred] = useState('chatgpt')
+      const [busy, setBusy] = useState(false)
+      const [clock, setClock] = useState(() => Date.now())
       const mounted = useRef(true)
       const requestSeq = useRef(0)
 
-      const load = useCallback(async () => {
-        const seq = ++requestSeq.current
+      /** 本插件自己的 ChatGPT 用量。 */
+      const loadChatgpt = useCallback(async () => {
         try {
           const data = await request(API + '?usage=1', {
             headers: { Accept: 'application/json' },
             cache: 'no-store',
           })
-          if (!mounted.current || seq !== requestSeq.current) return
+          if (!mounted.current) return
           setUsage(data.usage && data.usage.available === true ? data.usage : null)
         } catch {
-          if (!mounted.current || seq !== requestSeq.current) return
+          if (!mounted.current) return
           setUsage(null)
         }
       }, [])
 
+      /** 其它 AI 的余额/用量：借用量插件的只读接口（没装就静默降级为只有 ChatGPT）。 */
+      const loadProviders = useCallback(async () => {
+        try {
+          const response = await fetch(USAGE_ACCOUNTS_PATH, {
+            headers: { Accept: 'application/json' },
+            cache: 'no-store',
+          })
+          if (!response.ok) return
+          const data = await response.json()
+          if (!mounted.current) return
+          setRows(Array.isArray(data.accounts) ? data.accounts : [])
+        } catch {
+          // 静默：没有该插件时只显示 ChatGPT
+        }
+      }, [])
+
+      const loadPreferred = useCallback(async () => {
+        try {
+          const data = await loadState('')
+          if (!mounted.current) return
+          setPreferred((data.global && data.global.defaultUsageTab) || 'chatgpt')
+        } catch {
+          // 读不到配置就用 chatgpt
+        }
+      }, [])
+
+      /** DeepSeek 余额 + 当前峰谷时段（本插件自己算，不依赖别的插件）。 */
+      const loadDashboard = useCallback(async () => {
+        try {
+          const data = await request(API + '?dashboard=1', {
+            headers: { Accept: 'application/json' },
+            cache: 'no-store',
+          })
+          if (!mounted.current) return
+          setDashboard({ peak: data.peak || null, deepseek: data.deepseek || null })
+        } catch {
+          if (!mounted.current) return
+          setDashboard(null)
+        }
+      }, [])
+
+      const reload = useCallback(async () => {
+        const seq = ++requestSeq.current
+        setBusy(true)
+        await Promise.all([loadChatgpt(), loadProviders(), loadPreferred(), loadDashboard()])
+        if (mounted.current && seq === requestSeq.current) {
+          setBusy(false)
+          setClock(Date.now())
+        }
+      }, [loadChatgpt, loadProviders, loadPreferred, loadDashboard])
+
       useEffect(() => {
         mounted.current = true
         if (!wide) return undefined
-        void load()
+        try {
+          const saved = typeof localStorage !== 'undefined' ? localStorage.getItem(USAGE_TAB_KEY) : ''
+          if (saved) setTab(saved)
+        } catch {
+          // 隐私模式禁用 storage 时忽略
+        }
+        void reload()
         const timer = setInterval(() => {
           if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return
-          void load()
+          void reload()
         }, 60_000)
+        // 峰谷倒计时需要比整体刷新更勤一点（只改本地时钟，不请求网络）。
+        const clockTimer = setInterval(() => setClock(Date.now()), 30_000)
         const onVisible = () => {
-          if (typeof document !== 'undefined' && document.visibilityState === 'visible') void load()
+          if (typeof document !== 'undefined' && document.visibilityState === 'visible') void reload()
         }
         if (typeof document !== 'undefined') document.addEventListener('visibilitychange', onVisible)
         return () => {
           mounted.current = false
           clearInterval(timer)
+          clearInterval(clockTimer)
           if (typeof document !== 'undefined') document.removeEventListener('visibilitychange', onVisible)
         }
-      }, [load, wide])
+      }, [reload, wide])
 
-      if (!wide || !usage) return null
+      /** 可切换的 AI 列表：ChatGPT 第一，DeepSeek 第二（本插件自己算），其余来自用量插件（若装了）。 */
+      const tabs = useMemo(() => {
+        const list = [
+          { id: 'chatgpt', label: 'ChatGPT', kind: 'chatgpt', row: null },
+          { id: 'deepseek', label: 'DeepSeek', kind: 'dashboard', row: null },
+        ]
+        const seen = new Set(['chatgpt', 'openai-codex', 'deepseek'])
+        for (const row of rows) {
+          if (!row || row.status !== 'ok' || typeof row.id !== 'string') continue
+          // DeepSeek 家族已经由上面的本插件看板负责，避免出现重复项。
+          if (row.id.startsWith('deepseek')) continue
+          if (seen.has(row.id)) continue
+          seen.add(row.id)
+          list.push({ id: row.id, label: usageLabelOf(row), kind: row.kind, row })
+        }
+        return list
+      }, [rows])
 
-      const windows = Array.isArray(usage.windows) ? usage.windows : []
-      const planText = usage.planLabel || ''
-      const subscription = usage.subscription || {}
+      const activeId = tabs.some((item) => item.id === tab)
+        ? tab
+        : tabs.some((item) => item.id === preferred)
+          ? preferred
+          : 'chatgpt'
+      const active = tabs.find((item) => item.id === activeId) || tabs[0]
+
+      /** 点标题文字 = 刷新当前这一家。 */
+      const refreshActive = useCallback(async () => {
+        await reload()
+      }, [reload])
+
+      /** 点卡片空白处 = 切到下一家（ChatGPT → DeepSeek → 其它 AI → ChatGPT）。 */
+      const cycleTab = useCallback(async () => {
+        const index = tabs.findIndex((item) => item.id === activeId)
+        const next = tabs[(index + 1) % tabs.length] || tabs[0]
+        if (!next || next.id === activeId) {
+          await reload()
+          return
+        }
+        setTab(next.id)
+        try {
+          if (typeof localStorage !== 'undefined') localStorage.setItem(USAGE_TAB_KEY, next.id)
+        } catch {
+          // 忽略
+        }
+        await reload()
+      }, [activeId, reload, tabs])
+
+      if (!wide) return null
+
+      const windows = Array.isArray(usage && usage.windows) ? usage.windows : []
+      const planText = (usage && usage.planLabel) || ''
+      const subscription = (usage && usage.subscription) || {}
       const untilDate = formatDate(subscription.activeUntil)
       const today = new Date().toISOString().slice(0, 10)
       const untilText = untilDate
@@ -488,54 +633,153 @@ window.__ModuleLoader__.load({
           ? `订阅有效至 ${untilDate}`
           : `订阅周期至 ${untilDate}（已结束）`
         : ''
-      const resetCredits = Number.isFinite(usage.resetCredits) && usage.resetCredits > 0 ? usage.resetCredits : 0
+      const resetCredits =
+        usage && Number.isFinite(usage.resetCredits) && usage.resetCredits > 0 ? usage.resetCredits : 0
+
+      /** 一根「剩余百分比」进度条，ChatGPT 与其它 AI 共用。 */
+      const bar = (key, label, remaining, hint) => {
+        const value = Math.max(0, Math.min(100, Number(remaining) || 0))
+        const low = value <= 15
+        return h(
+          'div',
+          { key, style: usageStyles.row, title: hint },
+          h('span', { style: usageStyles.label }, label),
+          h(
+            'div',
+            { style: usageStyles.track },
+            h('div', {
+              style: {
+                ...usageStyles.fill,
+                width: `${value}%`,
+                background: low ? '#d9534f' : 'var(--dsw-specific-accent, #4d6bfe)',
+              },
+            }),
+          ),
+          h('span', { style: usageStyles.percent }, `剩 ${Math.round(value)}%`),
+        )
+      }
+
+      /** 其它 AI 的卡片主体：余额类显示金额，用量类显示各窗口剩余。 */
+      const bodyFor = (item) => {
+        if (item.kind === 'dashboard') {
+          const data = dashboard && dashboard.deepseek
+          const peak = dashboard && dashboard.peak
+          if (!data && !peak) {
+            return [h('div', { key: 'empty', style: usageStyles.hint }, busy ? '正在读取…' : '暂无余额数据')]
+          }
+          const total = data && Number.isFinite(Number(data.total)) ? Number(data.total) : null
+          const symbol = data && data.currency === 'CNY' ? '¥' : data && data.currency === 'USD' ? '$' : ''
+          const amount = total === null ? '—' : `${symbol}${total.toFixed(2)}`
+          const remainMs = peak && Number.isFinite(Number(peak.nextChangeAt)) ? Number(peak.nextChangeAt) - clock : 0
+          const countdown = remainMs > 60_000 ? formatCountdown(remainMs) : ''
+          const peakColor = peak && peak.isPeak === false ? '#3f9e6e' : '#d9534f'
+          return [
+            h('div', { key: 'balance', style: { ...usageStyles.brand, fontSize: '20px' } }, amount),
+            h(
+              'div',
+              { key: 'peak', style: { ...usageStyles.hint, color: peak ? peakColor : undefined } },
+              peak
+                ? `${peak.label}${countdown ? ` · ${peak.nextLabel} 还有 ${countdown}` : ''}`
+                : '未知时段',
+            ),
+            data && data.error ? h('div', { key: 'err', style: usageStyles.hint }, String(data.error)) : null,
+          ]
+        }
+        const row = item.row
+        if (!row) {
+          // ChatGPT：本插件自己的数据
+          if (!usage) return [h('div', { key: 'empty', style: usageStyles.hint }, busy ? '正在读取…' : '暂无用量数据')]
+          return [
+            ...windows.map((window) => {
+              const used = Math.max(0, Math.min(100, Number(window.usedPercent) || 0))
+              return bar(
+                window.id || window.label,
+                window.label || '',
+                100 - used,
+                `${window.label || ''}：已用 ${Math.round(used)}%，剩余 ${Math.round(100 - used)}%${
+                  window.resetAt ? `，${formatReset(window.resetAt)} 重置` : ''
+                }`,
+              )
+            }),
+            untilText ? h('div', { key: 'until', style: usageStyles.hint }, untilText) : null,
+          ]
+        }
+        const balance = row.balance || {}
+        if (row.kind === 'balance') {
+          const total = Number(balance.total)
+          const amount = Number.isFinite(total) ? `${balance.currency === 'CNY' ? '¥' : ''}${total.toFixed(2)}` : '—'
+          return [
+            h('div', { key: 'balance', style: { ...usageStyles.brand, fontSize: '20px' } }, amount),
+            h('div', { key: 'hint', style: usageStyles.hint }, row.reason ? String(row.reason) : '账户余额'),
+          ]
+        }
+        const list = Array.isArray(row.usage && row.usage.windows) ? row.usage.windows : []
+        if (list.length === 0) {
+          return [h('div', { key: 'empty', style: usageStyles.hint }, row.reason ? String(row.reason) : '暂无用量数据')]
+        }
+        return list.map((window) => {
+          const percent = Number(window.percent)
+          const remaining = Number.isFinite(percent) ? 100 - percent : 0
+          return bar(
+            window.key,
+            window.key === '5h' ? '5 小时' : window.key === '7d' ? '每周' : String(window.key || ''),
+            remaining,
+            `${window.key || ''}：已用 ${Math.round(percent || 0)}%，剩余 ${Math.round(remaining)}%`,
+          )
+        })
+      }
 
       return h(
         'div',
         {
-          onClick: () => void load(),
-          title: 'ChatGPT 用量：点击刷新',
           role: 'status',
+          onClick: () => void cycleTab(),
+          title: `点击卡片切换到下一家（当前 ${active.label}）`,
           style: usageStyles.card,
         },
         h(
           'div',
           { style: usageStyles.head },
-          h('span', { style: usageStyles.brand }, 'ChatGPT'),
-          planText ? h('span', { style: usageStyles.badge }, planText) : null,
-          resetCredits > 0
-            ? h('span', { style: { marginLeft: 'auto', fontSize: '10px', opacity: 0.55 } }, `${resetCredits} 次重置`)
-            : null,
-        ),
-        ...windows.map((window) => {
-          const used = Math.max(0, Math.min(100, Number(window.usedPercent) || 0))
-          const remaining = 100 - used
-          const low = remaining <= 15
-          return h(
-            'div',
+          // 点这一行的名字 = 刷新当前这一家；点卡片其它地方 = 切换。
+          h(
+            'span',
             {
-              key: window.id || window.label,
-              style: usageStyles.row,
-              title: `${window.label || ''}：已用 ${Math.round(used)}%，剩余 ${Math.round(remaining)}%${
-                window.resetAt ? `，${formatReset(window.resetAt)} 重置` : ''
-              }`,
+              onClick: (event) => {
+                if (event && typeof event.stopPropagation === 'function') event.stopPropagation()
+                void refreshActive()
+              },
+              title: `${active.label}：点击刷新`,
+              style: { ...usageStyles.brand, cursor: 'pointer' },
             },
-            h('span', { style: usageStyles.label }, window.label || ''),
-            h(
-              'div',
-              { style: usageStyles.track },
-              h('div', {
-                style: {
-                  ...usageStyles.fill,
-                  width: `${remaining}%`,
-                  background: low ? '#d9534f' : 'var(--dsw-specific-accent, #4d6bfe)',
+            active.label,
+          ),
+          active.kind === 'chatgpt' && planText ? h('span', { style: usageStyles.badge }, planText) : null,
+          active.kind === 'dashboard' && dashboard && dashboard.peak
+            ? h(
+                'span',
+                {
+                  style: {
+                    ...usageStyles.badge,
+                    color: dashboard.peak.isPeak === false ? '#3f9e6e' : '#d9534f',
+                    borderColor: dashboard.peak.isPeak === false ? '#3f9e6e55' : '#d9534f55',
+                  },
                 },
-              }),
-            ),
-            h('span', { style: usageStyles.percent }, `剩 ${Math.round(remaining)}%`),
-          )
-        }),
-        untilText ? h('div', { style: usageStyles.hint }, untilText) : null,
+                dashboard.peak.isPeak === false ? '折扣' : '标准',
+              )
+            : null,
+          h(
+            'span',
+            { style: { marginLeft: 'auto', fontSize: '10px', opacity: 0.45 } },
+            resetCredits > 0 && active.kind === 'chatgpt'
+              ? `${resetCredits} 次重置`
+              : busy
+                ? '刷新中…'
+                : tabs.length > 1
+                  ? `点卡片切换 (${tabs.length})`
+                  : '',
+          ),
+        ),
+        ...bodyFor(active),
       )
     }
 
@@ -547,6 +791,8 @@ window.__ModuleLoader__.load({
       const [allowLan, setAllowLan] = useState(false)
       const [delegateLight, setDelegateLight] = useState(false)
       const [gptNameDetect, setGptNameDetect] = useState(false)
+      const [defaultUsageTab, setDefaultUsageTab] = useState('chatgpt')
+      const [usageTabOptions, setUsageTabOptions] = useState([{ id: 'chatgpt', label: 'ChatGPT' }])
       const [deepseekModel, setDeepseekModel] = useState('')
       const [deepseekModels, setDeepseekModels] = useState([])
       const [deepseekModelsError, setDeepseekModelsError] = useState('')
@@ -603,6 +849,37 @@ window.__ModuleLoader__.load({
         }
       }, [])
 
+      /** 用量卡「默认展示」的候选：ChatGPT + DeepSeek（本插件自带）+ 其它已配置的 AI。 */
+      const loadUsageTabOptions = useCallback(async () => {
+        const base = [
+          { id: 'chatgpt', label: 'ChatGPT' },
+          { id: 'deepseek', label: 'DeepSeek' },
+        ]
+        try {
+          const response = await fetch(USAGE_ACCOUNTS_PATH, {
+            headers: { Accept: 'application/json' },
+            cache: 'no-store',
+          })
+          if (!response.ok) {
+            setUsageTabOptions(base)
+            return
+          }
+          const data = await response.json()
+          const rows = Array.isArray(data.accounts) ? data.accounts : []
+          const seen = new Set(['chatgpt', 'openai-codex', 'deepseek'])
+          const list = [...base]
+          for (const row of rows) {
+            if (!row || row.status !== 'ok' || typeof row.id !== 'string' || seen.has(row.id)) continue
+            if (row.id.startsWith('deepseek')) continue
+            seen.add(row.id)
+            list.push({ id: row.id, label: usageLabelOf(row) })
+          }
+          setUsageTabOptions(list)
+        } catch {
+          setUsageTabOptions(base)
+        }
+      }, [])
+
       const loadAll = useCallback(async () => {
         try {
           const data = await loadState('')
@@ -614,6 +891,7 @@ window.__ModuleLoader__.load({
             setAllowLan(data.global.allowLanAccess === true)
             setDelegateLight(data.global.delegateLightTasks === true)
             setGptNameDetect(data.global.gptNameDetect === true)
+            setDefaultUsageTab(data.global.defaultUsageTab || 'chatgpt')
             setDeepseekModel(data.global.deepseekModel || '')
           }
           if (data.auth && data.auth.loggedIn) {
@@ -621,10 +899,11 @@ window.__ModuleLoader__.load({
             await loadResets()
           }
           await loadDeepseekModels()
+          await loadUsageTabOptions()
         } catch (loadFailure) {
           setError(String(loadFailure.message || loadFailure))
         }
-      }, [loadModels, loadResets, loadDeepseekModels])
+      }, [loadModels, loadResets, loadDeepseekModels, loadUsageTabOptions])
 
       useEffect(() => {
         void loadAll()
@@ -748,7 +1027,15 @@ window.__ModuleLoader__.load({
         try {
           await postOp({
             op: 'setGlobal',
-            patch: { defaultModel, autoConsult, allowLanAccess: allowLan, delegateLightTasks: delegateLight, deepseekModel, gptNameDetect },
+            patch: {
+              defaultModel,
+              autoConsult,
+              allowLanAccess: allowLan,
+              delegateLightTasks: delegateLight,
+              deepseekModel,
+              gptNameDetect,
+              defaultUsageTab,
+            },
           })
           setNotice('已保存并生效。')
         } catch (saveFailure) {
@@ -756,7 +1043,7 @@ window.__ModuleLoader__.load({
         } finally {
           setBusy(false)
         }
-      }, [defaultModel, autoConsult, allowLan, delegateLight, deepseekModel, gptNameDetect])
+      }, [defaultModel, autoConsult, allowLan, delegateLight, deepseekModel, gptNameDetect, defaultUsageTab])
 
       const checkNetwork = useCallback(async () => {
         setChecking(true)
@@ -1057,6 +1344,25 @@ window.__ModuleLoader__.load({
             gptNameDetect
               ? '已开启：即使模型来自其他 provider，只要模型 id 形如 gpt-* / o3-*，输入框胶囊也会按「GPT」识别（显示 DeepSeek）。'
               : '关闭时只认本插件的 ChatGPT provider；开启后才会额外按模型名判断，避免把别家同名模型误认成本插件的 GPT。',
+          ),
+          h(
+            'div',
+            { style: styles.row },
+            h('span', { style: styles.label }, '用量卡默认显示'),
+            h(
+              'select',
+              {
+                value: defaultUsageTab,
+                onChange: (event) => setDefaultUsageTab(event.target.value),
+                style: styles.select,
+              },
+              usageTabOptions.map((item) => h('option', { key: item.id, value: item.id }, item.label)),
+            ),
+          ),
+          h(
+            'div',
+            { style: styles.hint },
+            '侧边栏底部那张用量卡打开时先显示这一家；点卡片里的其它名字可临时切换，点当前的名字重新读取。',
           ),
           h(
             'div',

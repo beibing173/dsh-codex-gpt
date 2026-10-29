@@ -18,6 +18,7 @@ import { homedir, networkInterfaces } from 'node:os'
 import { randomBytes } from 'node:crypto'
 import { callCodexBackend, fetchCodexModels, fetchResetCredits, consumeResetCredit } from './codex.js'
 import { getCodexUsage, __resetUsageCache } from './usage.js'
+import { fetchDeepseekBalance, peakState } from './deepseek.js'
 import { checkConnectivity } from './network.js'
 import { createAuthStore, ensureAccessToken, beginLogin, cancelLogin, describeCredential } from './oauth.js'
 import { createCodexGptAdapter, LEGACY_PROVIDER_IDS, PROVIDER_ID } from './llm-adapter.js'
@@ -95,6 +96,11 @@ export const Config = z.object({
     .description(
       '保险开关：开启后，若其他 provider 提供的模型 id 也形如 gpt-* / o3-*，输入框胶囊同样按「GPT」识别（显示 DeepSeek）。默认关闭，只认本插件的 ChatGPT provider。',
     )
+    .volatile(),
+  defaultUsageTab: z
+    .string()
+    .default('chatgpt')
+    .description('侧边栏用量卡默认展示哪一家：chatgpt（本插件），或用量的提供商 id（如 deepseek-account）。点击卡片标题可临时切换。')
     .volatile(),
 })
 
@@ -373,6 +379,12 @@ export function apply(ctx, config) {
   const delegateLightTasks = () => readValue('delegateLightTasks') === true
   /** 保险开关：是否按模型名把其他 provider 的 GPT 模型也算作 GPT（默认关闭）。 */
   const gptNameDetect = () => readValue('gptNameDetect') === true
+  /** 侧边栏用量卡默认展示哪一家：'chatgpt' 或用量插件里的 provider id。 */
+  const defaultUsageTab = () => {
+    const raw = readValue('defaultUsageTab')
+    const value = typeof raw === 'string' ? raw.trim() : ''
+    return value || 'chatgpt'
+  }
   const delegateModel = () => {
     const raw = readValue('deepseekModel')
     return typeof raw === 'string' ? raw.trim() : ''
@@ -422,6 +434,44 @@ export function apply(ctx, config) {
 
   /** 模型列表缓存（OAuth 登录后从 OpenAI 拉取）。 */
   let modelsCache = { at: 0, models: [], error: '' }
+
+  /** DeepSeek 余额缓存：30 秒内复用，避免看板频繁请求上游。 */
+  let deepseekBalanceCache = { at: 0, value: null, key: '' }
+
+  /** 读 DeepSeek API Key：先环境变量，再 DSH 的 credentials 服务。 */
+  const readDeepseekApiKey = async () => {
+    const env = (typeof process !== 'undefined' && process.env) || {}
+    for (const name of ['DEEPSEEK_API_KEY', 'DEEPSEEK_OFFICIAL_API_KEY', 'DEEPSEEK_ACCOUNT_API_KEY']) {
+      const value = env[name]
+      if (typeof value === 'string' && value.trim()) return { key: value.trim(), source: name }
+    }
+    try {
+      const credentials = ctx.get('credentials')
+      if (credentials && typeof credentials.resolve === 'function') {
+        for (const name of ['DEEPSEEK_API_KEY', 'DEEPSEEK_OFFICIAL_API_KEY']) {
+          const hit = await credentials.resolve(name)
+          const value = hit && typeof hit.value === 'string' ? hit.value.trim() : ''
+          if (value) return { key: value, source: name }
+        }
+      }
+    } catch {
+      // 读不到就当作没配
+    }
+    return { key: '', source: '' }
+  }
+
+  /** 余额（带 30 秒缓存；没配 Key 时直接返回未配置，不打网络）。 */
+  const readDeepseekBalanceCached = async () => {
+    const { key, source } = await readDeepseekApiKey()
+    if (!key) return { available: false, total: null, currency: '', error: '未配置 DEEPSEEK_API_KEY', source: '' }
+    const at = Date.now()
+    if (deepseekBalanceCache.value && deepseekBalanceCache.key === source && at - deepseekBalanceCache.at < 30_000) {
+      return deepseekBalanceCache.value
+    }
+    const value = { ...(await fetchDeepseekBalance({ apiKey: key })), source }
+    deepseekBalanceCache = { at, value, key: source }
+    return value
+  }
   /** 模型列表单飞：并发刷新共用一次上游请求。 */
   let inflightModels = null
   /** LLM 适配器注册状态（诊断用，展示在状态路由里）。 */
@@ -887,6 +937,7 @@ export function apply(ctx, config) {
         delegateLightTasks: delegateLightTasks(),
         deepseekModel: delegateModel(),
         gptNameDetect: gptNameDetect(),
+        defaultUsageTab: defaultUsageTab(),
       },
       session: sessionId ? { ...store.get(sessionId), model: effectiveModel(sessionId) } : null,
     }
@@ -918,6 +969,9 @@ export function apply(ctx, config) {
       if (typeof patch.allowLanAccess === 'boolean') next.allowLanAccess = patch.allowLanAccess
       if (typeof patch.delegateLightTasks === 'boolean') next.delegateLightTasks = patch.delegateLightTasks
       if (typeof patch.gptNameDetect === 'boolean') next.gptNameDetect = patch.gptNameDetect
+      if (typeof patch.defaultUsageTab === 'string') {
+        next.defaultUsageTab = patch.defaultUsageTab.trim().slice(0, 100)
+      }
       if (typeof patch.deepseekModel === 'string') next.deepseekModel = patch.deepseekModel.trim().slice(0, 200)
       if (Object.keys(next).length > 0) await writeConfig(next)
       return
@@ -1040,6 +1094,16 @@ export function apply(ctx, config) {
           }
           const { models, error } = await getModels(credential, false)
           sendJson(res, 200, { ok: true, models, error })
+          return
+        }
+        if (url.searchParams.get('dashboard') === '1') {
+          // 用量看板：DeepSeek 余额 + 当前峰谷时段（不涉密：只回金额与时段）。
+          const peak = peakState(Date.now())
+          let deepseek = null
+          if (!redacted) {
+            deepseek = await readDeepseekBalanceCached()
+          }
+          sendJson(res, 200, { ok: true, peak, deepseek })
           return
         }
         if (url.searchParams.get('deepseekModels') === '1') {
