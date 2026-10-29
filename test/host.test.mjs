@@ -402,17 +402,11 @@ test('deepseek_delegate：未开启时提示，开启后标注「已交由 DeepS
   assert.match(onText, /整理后的结果/)
 })
 
-test('默认模型「自动选择」：未显式设置时取可用列表第一个', async (t) => {
-  const original = globalThis.fetch
-  t.after(() => {
-    globalThis.fetch = original
-  })
-  globalThis.fetch = mockBackend()
+test('默认模型「自动选择」：未显式设置时为空（由模型按任务自动挑）', async () => {
   writeAuth()
   const harness = createHarness()
-  await callApi(harness, { url: '/dsh-codex-api?models=1' })
   const { json } = await callApi(harness, {})
-  assert.equal(json.global.defaultModel, 'gpt-5-codex')
+  assert.equal(json.global.defaultModel, '')
 })
 
 test('GET ?deepseekModels=1 返回 DeepSeek 模型列表（供委派选择）', async () => {

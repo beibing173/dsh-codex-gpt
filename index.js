@@ -268,7 +268,7 @@ function renderPolicy(state, settings) {
   }
   const lines = [
     '## Codex 专业分析通道（dsh-codex）',
-    `本会话已由用户【授权】使用 Codex，默认模型：\`${settings.model}\`（订阅：${state.planLabel || '未知'}）。`,
+    `本会话已由用户【授权】使用 Codex，默认模型：\`${settings.model === 'auto' ? '自动选择' : settings.model}\`（订阅：${state.planLabel || '未知'}）。`,
     '- 常规任务（日常问答、简单改动、轻量检索、一般代码编辑）仍由你直接完成，不要调用 codex。',
     settings.autoConsult
       ? '- 出现下列情况时，你应主动调用 `codex` 工具获取独立专业分析或构建结果，再结合环境事实给出最终答案：'
@@ -309,12 +309,23 @@ export function apply(ctx, config) {
   }
 
   /** 自动选择的模型 id：最近一次拉取的可用列表第一个（用户没显式选模型时用它）。 */
-  let autoModelId = ''
-
-  const defaultModel = () => {
+  /** 用户显式选择的 GPT 模型（空字符串 = 自动选择）。 */
+  const configuredModel = () => {
     const raw = readValue('defaultModel')
-    const model = typeof raw === 'string' ? raw.trim() : ''
-    return model || autoModelId || DEFAULT_MODEL
+    return typeof raw === 'string' ? raw.trim() : ''
+  }
+  /** 自动选择 GPT 模型：长上下文/复杂任务用强模型，否则用轻模型。 */
+  const autoGptModel = (text) => {
+    const models = modelsCache.models || []
+    if (models.length === 0) return DEFAULT_MODEL
+    const strong = models.find((model) => /6\.1|6-|sol|terra/i.test(model.slug))
+    const light = models.find((model) => /5\.6|flash|luna/i.test(model.slug)) || models[0]
+    return (String(text || '').length > 12_000 && strong ? strong : light).slug
+  }
+  const defaultModel = () => {
+    const configured = configuredModel()
+    if (configured && configured !== 'auto') return configured
+    return 'auto'
   }
   const autoConsult = () => readValue('autoConsult') !== false
   const allowLanAccess = () => readValue('allowLanAccess') === true
@@ -349,8 +360,6 @@ export function apply(ctx, config) {
         accountId: credential.accountId,
       })
       modelsCache = { at: Date.now(), models, error: '' }
-      // 自动选择：记住可用列表第一个，用户选「自动选择」时用它。
-      if (models[0] && models[0].slug) autoModelId = models[0].slug
       return { models, error: '' }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
@@ -444,7 +453,11 @@ export function apply(ctx, config) {
       const context = typeof args?.context === 'string' ? args.context.trim().slice(0, MAX_CONTEXT_CHARS) : ''
       const mode = args?.mode === 'build' ? 'build' : 'analyze'
       const requested = typeof args?.model === 'string' ? args.model.trim() : ''
-      const model = requested || effectiveModel(sessionId)
+      const configured = configuredModel()
+      const model =
+        requested ||
+        state.model ||
+        (configured && configured !== 'auto' ? configured : autoGptModel(`${task}\n${context}`))
 
       const timeout = AbortSignal.timeout(CODEX_TIMEOUT_MS)
       const signal =
@@ -499,17 +512,16 @@ export function apply(ctx, config) {
     }
   }
   let deepseekModelCache = { at: 0, id: '' }
-  const resolveDeepseekModel = async (provider) => {
+  const resolveDeepseekModel = async (provider, text) => {
     const configured = delegateModel()
-    if (configured) return configured
-    if (deepseekModelCache.id && Date.now() - deepseekModelCache.at < 10 * 60_000) return deepseekModelCache.id
+    if (configured && configured !== 'auto') return configured
     try {
       const models = await ctx.llm.listModels(provider)
-      const pick = models.find((item) => /v4|flash|chat/i.test(item.id)) || models[0]
-      if (pick && pick.id) {
-        deepseekModelCache = { at: Date.now(), id: pick.id }
-        return pick.id
-      }
+      const wantsStrong = String(text || '').length > 3_000
+      const strong = models.find((item) => /v4-pro|pro/i.test(item.id))
+      const light = models.find((item) => /flash/i.test(item.id)) || models[0]
+      const pick = wantsStrong && strong ? strong : light
+      if (pick && pick.id) return pick.id
     } catch {
       // 模型目录不可用时用保守默认
     }
@@ -517,7 +529,7 @@ export function apply(ctx, config) {
   }
   const runDeepSeek = async (prompt, signal) => {
     const provider = deepseekProvider()
-    const model = await resolveDeepseekModel(provider)
+    const model = await resolveDeepseekModel(provider, prompt)
     let text = ''
     for await (const chunk of ctx.llm.stream({
       provider,
@@ -694,7 +706,7 @@ export function apply(ctx, config) {
       auth,
       llm: { providers: llmProviders, adapter: llmAdapterStatus },
       global: {
-        defaultModel: defaultModel(),
+        defaultModel: configuredModel(),
         autoConsult: autoConsult(),
         allowLanAccess: allowLanAccess(),
         delegateLightTasks: delegateLightTasks(),

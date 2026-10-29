@@ -782,7 +782,7 @@ window.__ModuleLoader__.load({
                 onChange: (event) => setDefaultModel(event.target.value),
                 disabled: !loggedIn,
               },
-              h('option', { value: '' }, '自动选择（可用列表第一个）'),
+              h('option', { value: '' }, '自动选择（按任务自动挑）'),
               modelOptions.length === 0
                 ? h('option', { value: '__none__', disabled: true }, '登录后自动获取')
                 : modelOptions.map((slug) => h('option', { key: slug, value: slug }, slug)),
@@ -859,7 +859,7 @@ window.__ModuleLoader__.load({
                     value: deepseekModel,
                     onChange: (event) => setDeepseekModel(event.target.value),
                   },
-                  h('option', { value: '' }, '自动选择（V4.1 优先）'),
+                  h('option', { value: '' }, '自动选择（按任务自动挑）'),
                   deepseekModel && !deepseekModels.some((item) => item.id === deepseekModel)
                     ? h('option', { value: deepseekModel }, deepseekModel)
                     : null,

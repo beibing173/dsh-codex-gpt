@@ -9,6 +9,8 @@
  */
 export const PROVIDER_ID = 'chatgpt-codex'
 const PROVIDER_NAME = 'ChatGPT'
+/** 「自动选择」：由适配器按请求规模/工具量/思考强度挑具体模型。 */
+export const AUTO_MODEL_ID = 'auto'
 /** 思考强度档位：与 DSH 官方（DeepSeek）一致的 Off / Low / High / Max。 */
 export const REASONING_EFFORTS = [
   { id: 'off', name: 'Off', description: '不进行思考' },
@@ -89,6 +91,18 @@ export function createCodexGptAdapter(opts) {
     const modelId =
       typeof model === 'string' ? model : typeof model?.id === 'string' ? model.id : String(model || '')
     if (!modelId) throw new Error('未指定 Codex 模型')
+
+    if (modelId === AUTO_MODEL_ID) {
+      return {
+        provider: PROVIDER_ID,
+        id: AUTO_MODEL_ID,
+        name: '自动选择',
+        context: { contextWindow: DEFAULT_CONTEXT_WINDOW },
+        defaultMaxTokens: DEFAULT_MAX_TOKENS,
+        reasoning: { efforts: REASONING_EFFORTS.map((effort) => ({ ...effort })), defaultEffort: DEFAULT_REASONING_EFFORT },
+        inputModalities: ['text', 'image'],
+      }
+    }
 
     let found
     try {
@@ -527,6 +541,25 @@ export function createCodexGptAdapter(opts) {
     return sendRequest(options, credential, signal)
   }
 
+  /** 「自动选择」：按任务规模挑具体模型（长上下文/多工具/max 思考 → 强模型，否则轻模型）。 */
+  async function pickModelId(options, credential) {
+    const requested = typeof options?.model === 'string' ? options.model : options?.model?.id
+    if (requested && requested !== AUTO_MODEL_ID) return requested
+    let models = []
+    try {
+      models = normalizeModels(await loadModels(credential))
+    } catch {
+      models = []
+    }
+    if (models.length === 0) return 'gpt-5-codex'
+    const size = estimateRequestSize(options)
+    const toolCount = Array.isArray(options?.tools) ? options.tools.length : 0
+    const wantsStrong = size > 12_000 || toolCount > 12 || options?.reasoningEffort === 'max'
+    const strong = models.find((model) => /6\.1|6-|sol|terra/i.test(model.slug))
+    const light = models.find((model) => /5\.6|flash|luna/i.test(model.slug)) || models[0]
+    return (wantsStrong && strong ? strong : light).slug
+  }
+
   async function sendRequest(options, credential, signal) {
     const headers = {
       Authorization: `Bearer ${credential.accessToken}`,
@@ -535,10 +568,11 @@ export function createCodexGptAdapter(opts) {
       'Content-Type': 'application/json',
     }
     if (credential.accountId) headers['chatgpt-account-id'] = credential.accountId
+    const model = await pickModelId(options, credential)
     return fetch(RESPONSES_URL, {
       method: 'POST',
       headers,
-      body: JSON.stringify(await buildRequestBody(options, readImage)),
+      body: JSON.stringify(await buildRequestBody({ ...options, model }, readImage)),
       signal,
     })
   }
@@ -558,6 +592,24 @@ export function createCodexGptAdapter(opts) {
     prepareCall,
     stream,
   }
+}
+
+/** 估算一次请求的文本规模（字符数），用于「自动选择」挑模型。 */
+export function estimateRequestSize(options) {
+  let total = String(options?.system || '').length
+  for (const message of Array.isArray(options?.messages) ? options.messages : []) {
+    const content = message?.content
+    if (typeof content === 'string') {
+      total += content.length
+      continue
+    }
+    if (Array.isArray(content)) {
+      for (const block of content) {
+        if (block?.type === 'text' && typeof block.text === 'string') total += block.text.length
+      }
+    }
+  }
+  return total
 }
 
 /** 组装 Codex Responses 请求体（异步：需要读取图片附件）。 */
