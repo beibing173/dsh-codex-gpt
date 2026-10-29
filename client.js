@@ -1,16 +1,13 @@
 /**
  * dsh-codex — 浏览器侧（dsh.client 声明，包入口 dsh-codex/client）。
  *
- * 两处 UI：
- *   1. 输入框左侧「Codex」胶囊按钮（conversation.input.left，按会话渲染）：
- *      点击 = 授权/撤销当前会话使用 Codex。这是用户手动授权的唯一入口。
- *   2. 设置 →「Codex」页（settings.section）：API Key / Base URL / 默认模型 /
- *      模型列表 / 自主调用开关 / 局域网访问 / 连接测试。
+ * 三处 UI：
+ *   1. 输入框左侧「Codex」胶囊按钮（conversation.input.left）：点击授权/撤销当前会话。
+ *   2. 侧边栏底部用量卡片（sidebar.footer.action）：5 小时 / 每周限额、订阅状态、有效期。
+ *   3. 设置 →「Codex」页（settings.section）：登录 OpenAI 账号（跳官网 OAuth）、
+ *      模型列表（从 OpenAI 实时拉取）、自主调用开关、外网连通性检查。
  *
- * 数据通道：Host 注册的同源 HTTP 路由 `/dsh-codex-api`（GET 读状态，POST 写状态）。
- * 这样不需要自定义 Typert Remote 描述符，客户端只依赖 fetch 与 slots。
- *
- * 格式为 __ModuleLoader__ 的 CJS-factory 形式（id 必须等于包名）。
+ * 数据通道：Host 的同源 HTTP 路由 `/dsh-codex-api`（GET 读状态，POST 写操作）。
  */
 window.__ModuleLoader__.load({
   id: 'dsh-codex',
@@ -19,7 +16,6 @@ window.__ModuleLoader__.load({
     const { useCallback, useEffect, useRef, useState } = React
     const h = React.createElement
 
-    /** Host 状态路由。 */
     const API = '/dsh-codex-api'
 
     const styles = {
@@ -51,22 +47,10 @@ window.__ModuleLoader__.load({
         background: 'var(--dsw-specific-accent, #4d6bfe)',
         color: '#fff',
         borderRadius: '8px',
-        padding: '5px 12px',
+        padding: '6px 14px',
         fontSize: '13px',
         cursor: 'pointer',
         fontFamily: 'inherit',
-      },
-      input: {
-        background: 'transparent',
-        border: '1px solid var(--dsw-alias-border-strong, rgba(128,128,128,.3))',
-        borderRadius: '8px',
-        padding: '5px 8px',
-        color: 'inherit',
-        fontSize: '13px',
-        fontFamily: 'inherit',
-        flex: 1,
-        minWidth: '200px',
-        boxSizing: 'border-box',
       },
       select: {
         background: 'transparent',
@@ -76,7 +60,15 @@ window.__ModuleLoader__.load({
         color: 'inherit',
         fontSize: '13px',
         fontFamily: 'inherit',
-        minWidth: '180px',
+        minWidth: '220px',
+      },
+      badge: {
+        fontSize: '11px',
+        lineHeight: '18px',
+        padding: '0 8px',
+        borderRadius: '99px',
+        background: 'var(--dsw-specific-accent, #4d6bfe)',
+        color: '#fff',
       },
       notice: { fontSize: '12px', color: 'var(--dsw-specific-accent, #4d6bfe)' },
       error: { fontSize: '12px', color: '#d9534f', lineHeight: '1.5' },
@@ -101,7 +93,6 @@ window.__ModuleLoader__.load({
       },
     }
 
-    /** 统一请求：非 2xx 或 ok:false 抛 Error(message)。 */
     async function request(path, init) {
       const response = await fetch(path, init)
       let payload
@@ -117,13 +108,11 @@ window.__ModuleLoader__.load({
       return payload
     }
 
-    /** 读取全局配置 + 指定会话授权状态。 */
     function loadState(sessionId) {
       const query = sessionId ? `?sessionId=${encodeURIComponent(sessionId)}` : ''
       return request(API + query, { headers: { Accept: 'application/json' }, cache: 'no-store' })
     }
 
-    /** 写入一个操作。 */
     function postOp(payload) {
       return request(API, {
         method: 'POST',
@@ -146,25 +135,23 @@ window.__ModuleLoader__.load({
       )
     }
 
-    /**
-     * 输入框左侧的 Codex 胶囊按钮（会话作用域）。
-     * 未授权时灰色、已授权时高亮；点击切换本会话授权。
-     */
+    /** 输入框左侧的 Codex 胶囊按钮（会话作用域）。 */
     function CodexToggle(props) {
-      const sessionId = props && props.sessionId ? String(props.sessionId) : ''
-      const [state, setState] = useState({ status: 'loading', session: null, global: null, error: '' })
+      const injected = props && props.sessionId ? props.sessionId : props && props.inject && props.inject.sessionId
+      const sessionId = injected ? String(injected) : ''
+      const [state, setState] = useState({ status: 'loading', session: null, auth: null, error: '' })
       const [busy, setBusy] = useState(false)
 
       const reload = useCallback(async () => {
         if (!sessionId) {
-          setState({ status: 'unavailable', session: null, global: null, error: '当前没有会话' })
+          setState({ status: 'unavailable', session: null, auth: null, error: '当前没有会话' })
           return
         }
         try {
           const data = await loadState(sessionId)
-          setState({ status: 'ready', session: data.session, global: data.global, error: '' })
+          setState({ status: 'ready', session: data.session, auth: data.auth, error: '' })
         } catch (error) {
-          setState({ status: 'error', session: null, global: null, error: String(error.message || error) })
+          setState({ status: 'error', session: null, auth: null, error: String(error.message || error) })
         }
       }, [sessionId])
 
@@ -173,15 +160,16 @@ window.__ModuleLoader__.load({
       }, [reload])
 
       const enabled = Boolean(state.session && state.session.enabled === true)
+      const loggedIn = Boolean(state.auth && state.auth.loggedIn === true)
       const unavailable = state.status === 'error' || state.status === 'unavailable'
-      const model = (state.session && state.session.model) || (state.global && state.global.defaultModel) || ''
+      const model = (state.session && state.session.model) || (state.auth && state.auth.planLabel) || ''
 
       const toggle = useCallback(async () => {
         if (!sessionId || busy || unavailable) return
         setBusy(true)
         try {
           const data = await postOp({ op: 'setSessionEnabled', sessionId, enabled: !enabled })
-          setState({ status: 'ready', session: data.session, global: data.global, error: '' })
+          setState({ status: 'ready', session: data.session, auth: data.auth, error: '' })
         } catch (error) {
           if (typeof window !== 'undefined') window.alert('Codex 开关失败：' + String(error.message || error))
         } finally {
@@ -191,9 +179,11 @@ window.__ModuleLoader__.load({
 
       const title = unavailable
         ? 'Codex 状态不可用：' + (state.error || '服务未就绪')
-        : enabled
-          ? `本会话已授权 Codex（模型 ${model || '默认'}）。点击撤销授权。`
-          : '本会话未授权 Codex。点击允许本会话在需要时调用 GPT/Codex 做专业分析。'
+        : !loggedIn
+          ? '尚未登录 OpenAI 账号：请先到 设置 → Codex 页登录，再点这里授权本会话。'
+          : enabled
+            ? `本会话已授权 Codex（模型 ${model || '默认'}）。点击撤销授权。`
+            : '本会话未授权 Codex。点击允许本会话在需要时调用 GPT/Codex 做专业分析。'
 
       return h(
         'button',
@@ -239,315 +229,6 @@ window.__ModuleLoader__.load({
       )
     }
 
-    /** 设置 →「Codex」页。 */
-    function CodexSettings() {
-      const [global, setGlobal] = useState(null)
-      const [error, setError] = useState('')
-      const [notice, setNotice] = useState('')
-      const [busy, setBusy] = useState(false)
-      const [testing, setTesting] = useState(false)
-      const [checking, setChecking] = useState(false)
-      const [network, setNetwork] = useState(null)
-      const initialized = useRef(false)
-      const [form, setForm] = useState({
-        apiKey: '',
-        baseUrl: '',
-        defaultModel: '',
-        modelsText: '',
-        autoConsult: true,
-        maxOutputTokens: '0',
-        allowLanAccess: false,
-      })
-
-      const setField = useCallback((key, value) => {
-        setForm((current) => ({ ...current, [key]: value }))
-      }, [])
-
-      const load = useCallback(async () => {
-        try {
-          const data = await loadState('')
-          setGlobal(data.global)
-          setError('')
-          if (!initialized.current) {
-            initialized.current = true
-            setForm({
-              apiKey: '',
-              baseUrl: data.global.baseUrl || '',
-              defaultModel: data.global.defaultModel || '',
-              modelsText: (data.global.models || []).join(', '),
-              autoConsult: data.global.autoConsult !== false,
-              maxOutputTokens: String(data.global.maxOutputTokens || 0),
-              allowLanAccess: data.global.allowLanAccess === true,
-            })
-          }
-        } catch (error) {
-          setError(String(error.message || error))
-        }
-      }, [])
-
-      useEffect(() => {
-        void load()
-      }, [load])
-
-      const models = (global && global.models) || []
-      const modelOptions = [...new Set([...(form.defaultModel ? [form.defaultModel] : []), ...models])]
-
-      const save = useCallback(async () => {
-        setBusy(true)
-        setNotice('')
-        setError('')
-        try {
-          const patch = {
-            baseUrl: form.baseUrl.trim(),
-            defaultModel: form.defaultModel.trim(),
-            models: form.modelsText
-              .split(',')
-              .map((item) => item.trim())
-              .filter(Boolean),
-            autoConsult: form.autoConsult,
-            maxOutputTokens: Number(form.maxOutputTokens) || 0,
-            allowLanAccess: form.allowLanAccess,
-          }
-          if (form.apiKey.trim()) patch.apiKey = form.apiKey.trim()
-          const data = await postOp({ op: 'setGlobal', patch })
-          setGlobal(data.global)
-          setForm((current) => ({ ...current, apiKey: '' }))
-          setNotice('已保存并生效。')
-        } catch (error) {
-          setError(String(error.message || error))
-        } finally {
-          setBusy(false)
-        }
-      }, [form])
-
-      const test = useCallback(async () => {
-        setTesting(true)
-        setNotice('')
-        setError('')
-        try {
-          const data = await postOp({ op: 'testConnection' })
-          const result = data.result || {}
-          setNotice(`连接正常：${result.model || '模型'}（${result.latencyMs ?? '?'}ms，${result.endpoint || 'responses'}）`)
-        } catch (error) {
-          setError('连接测试失败：' + String(error.message || error))
-        } finally {
-          setTesting(false)
-        }
-      }, [])
-
-      const checkNetwork = useCallback(async () => {
-        setChecking(true)
-        setNotice('')
-        setError('')
-        try {
-          const data = await postOp({ op: 'testNetwork' })
-          setNetwork(data.result || null)
-        } catch (error) {
-          setError('外网连通性检查失败：' + String(error.message || error))
-        } finally {
-          setChecking(false)
-        }
-      }, [])
-
-      if (!global && !error) return h('div', { style: styles.hint }, 'Codex 设置加载中…')
-      if (!global && error) return h('div', { style: styles.error }, `Codex 状态不可用：${error}`)
-
-      const keyHint = global.apiConfigured
-        ? global.keySource === 'env'
-          ? '已从环境变量 OPENAI_API_KEY 读取；留空则继续使用环境变量。'
-          : '已配置 API Key；留空保持不变，填入新值则覆盖。'
-        : '尚未配置 API Key。填写后保存，或设置环境变量 OPENAI_API_KEY。'
-
-      return h(
-        'div',
-        { style: styles.page },
-        h(
-          'div',
-          { style: styles.card },
-          h('div', { style: styles.title }, '🛠️ Codex 专业分析通道'),
-          h(
-            'div',
-            { style: styles.hint },
-            '正常任务始终由 DeepSeek（V4.1）处理。只有你手动在会话里授权 Codex 后，模型才会在任务强度高或需要专业分析时调用 OpenAI Codex/GPT；授权按会话保存，可随时撤销。',
-          ),
-          h(
-            'div',
-            { style: styles.row },
-            h('span', { style: styles.label }, 'API Key'),
-            h('input', {
-              type: 'password',
-              autoComplete: 'off',
-              spellCheck: false,
-              style: styles.input,
-              placeholder: global.apiConfigured ? '已配置（留空保持不变）' : 'sk-...',
-              value: form.apiKey,
-              onChange: (event) => setField('apiKey', event.target.value),
-            }),
-          ),
-          h('div', { style: styles.hint }, keyHint),
-          h(
-            'div',
-            { style: styles.row },
-            h('span', { style: styles.label }, 'Base URL'),
-            h('input', {
-              style: styles.input,
-              placeholder: 'https://api.openai.com/v1',
-              value: form.baseUrl,
-              onChange: (event) => setField('baseUrl', event.target.value),
-            }),
-          ),
-          h(
-            'div',
-            { style: styles.row },
-            h('span', { style: styles.label }, '默认模型'),
-            h(
-              'select',
-              {
-                style: styles.select,
-                value: form.defaultModel,
-                onChange: (event) => setField('defaultModel', event.target.value),
-              },
-              modelOptions.map((model) => h('option', { key: model, value: model }, model)),
-            ),
-          ),
-          h(
-            'div',
-            { style: styles.row },
-            h('span', { style: styles.label }, '模型列表'),
-            h('input', {
-              style: styles.input,
-              placeholder: '用逗号分隔，例如 gpt-5-codex, gpt-5, gpt-5-mini',
-              value: form.modelsText,
-              onChange: (event) => setField('modelsText', event.target.value),
-            }),
-          ),
-          h(
-            'div',
-            { style: styles.row },
-            h('span', { style: styles.label }, '自主调用'),
-            h(
-              'label',
-              { style: { display: 'inline-flex', alignItems: 'center', gap: '8px', cursor: 'pointer' } },
-              h(ToggleBox, { on: form.autoConsult }),
-              h(
-                'span',
-                { onClick: () => setField('autoConsult', !form.autoConsult), style: { fontSize: '13px' } },
-                form.autoConsult ? '已授权会话可按任务强度自主调用' : '仅在用户明确要求时调用',
-              ),
-            ),
-          ),
-          h(
-            'div',
-            { style: styles.row },
-            h('span', { style: styles.label }, '输出上限'),
-            h('input', {
-              type: 'number',
-              min: 0,
-              step: 1000,
-              style: { ...styles.input, maxWidth: '140px' },
-              value: form.maxOutputTokens,
-              onChange: (event) => setField('maxOutputTokens', event.target.value),
-            }),
-            h('span', { style: styles.hint }, 'token；0 表示不设置'),
-          ),
-          h(
-            'div',
-            { style: styles.row },
-            h(ToggleBox, { on: form.allowLanAccess }),
-            h(
-              'span',
-              {
-                onClick: () => setField('allowLanAccess', !form.allowLanAccess),
-                style: { fontSize: '13px', cursor: 'pointer' },
-              },
-              '允许局域网设备读写本插件状态（默认仅本机）',
-            ),
-          ),
-          h(
-            'div',
-            { style: styles.row },
-            h(
-              'button',
-              { type: 'button', style: styles.buttonPrimary, onClick: save, disabled: busy },
-              busy ? '保存中…' : '保存',
-            ),
-            h(
-              'button',
-              { type: 'button', style: styles.button, onClick: test, disabled: testing },
-              testing ? '测试中…' : '测试连接',
-            ),
-            h(
-              'button',
-              { type: 'button', style: styles.button, onClick: checkNetwork, disabled: checking },
-              checking ? '检查中…' : '外网连通性检查',
-            ),
-          ),
-          network
-            ? h(
-                'div',
-                { style: { display: 'flex', flexDirection: 'column', gap: '4px' } },
-                h(
-                  'div',
-                  { style: styles.hint },
-                  `外网连通性：${network.reachable}/${network.total} 条链路可达（判定标准是能拿到 HTTP 响应）`,
-                ),
-                (network.targets || []).map((target) =>
-                  h(
-                    'div',
-                    { key: target.id, style: { display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px' } },
-                    h('span', {
-                      style: {
-                        width: '7px',
-                        height: '7px',
-                        borderRadius: '50%',
-                        flex: '0 0 auto',
-                        background: target.ok ? '#2fa84f' : '#d9534f',
-                      },
-                    }),
-                    h('span', { style: { minWidth: '96px' } }, target.label),
-                    h(
-                      'span',
-                      { style: { opacity: 0.65, flex: 1 } },
-                      target.ok
-                        ? `可达 · HTTP ${target.status} · ${target.latencyMs}ms`
-                        : `不可达 · ${target.error || '连接失败'}（${target.latencyMs}ms）`,
-                    ),
-                  ),
-                ),
-              )
-            : null,
-          notice ? h('div', { style: styles.notice }, notice) : null,
-          error ? h('div', { style: styles.error }, error) : null,
-        ),
-        h(
-          'div',
-          { style: styles.card },
-          h('div', { style: styles.title }, '使用方式'),
-          h(
-            'div',
-            { style: styles.hint },
-            '1. 在本页填好 API Key 与默认模型并保存。',
-          ),
-          h(
-            'div',
-            { style: styles.hint },
-            '2. 回到对话，点击输入框左侧的「Codex」按钮授权当前会话（按钮变蓝即已授权）。',
-          ),
-          h(
-            'div',
-            { style: styles.hint },
-            '3. 之后遇到高难度任务，DeepSeek 会自主调用 Codex 获取分析；也可以直接说「让 GPT 分析一下」。',
-          ),
-          h(
-            'div',
-            { style: styles.hint },
-            '4. 未授权的会话保持纯 DeepSeek 模式，不会产生任何 OpenAI 费用。',
-          ),
-        ),
-      )
-    }
-
-    /** 日期展示：ISO 字符串或 unix 秒/毫秒都兜住。 */
     function formatDate(value) {
       if (typeof value !== 'string' || !value) return ''
       const match = value.match(/^(\d{4})-(\d{2})-(\d{2})/)
@@ -596,12 +277,7 @@ window.__ModuleLoader__.load({
       hint: { fontSize: '11px', opacity: 0.6, marginTop: '1px' },
     }
 
-    /**
-     * 侧边栏底部用量卡片：Codex（ChatGPT 订阅）的 5 小时 / 每周限额、
-     * 当前订阅状态与到期日。数据来自 Host 的 `/dsh-codex-api?usage=1`
-     * （读本机 Codex 登录凭证）；拿不到就整块不渲染，不留空卡片。
-     * 只有侧边栏展开（wide）时显示；点击卡片立即刷新，60 秒心跳一次。
-     */
+    /** 侧边栏底部 Codex 用量卡片；拿不到数据或侧栏收起时不渲染。 */
     function CodexUsageCard(props) {
       const wide = !(props && props.wide === false)
       const [usage, setUsage] = useState(null)
@@ -625,6 +301,7 @@ window.__ModuleLoader__.load({
 
       useEffect(() => {
         mounted.current = true
+        if (!wide) return undefined
         void load()
         const timer = setInterval(() => {
           if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return
@@ -639,7 +316,7 @@ window.__ModuleLoader__.load({
           clearInterval(timer)
           if (typeof document !== 'undefined') document.removeEventListener('visibilitychange', onVisible)
         }
-      }, [load])
+      }, [load, wide])
 
       if (!wide || !usage) return null
 
@@ -647,7 +324,6 @@ window.__ModuleLoader__.load({
       const planText = usage.planLabel || ''
       const subscription = usage.subscription || {}
       const untilDate = formatDate(subscription.activeUntil)
-      // 订阅周期字段来自登录 token，可能是上一个周期：过期就如实标注，而不是假装有效。
       const today = new Date().toISOString().slice(0, 10)
       const untilText = untilDate
         ? untilDate >= today
@@ -695,7 +371,360 @@ window.__ModuleLoader__.load({
             h('span', { style: usageStyles.percent }, `${Math.round(Number(window.usedPercent) || 0)}%`),
           ),
         ),
-        untilText ? h('div', { style: usageStyles.hint }, `订阅有效至 ${untilText}`) : null,
+        untilText ? h('div', { style: usageStyles.hint }, untilText) : null,
+      )
+    }
+
+    /** 设置 →「Codex」页。 */
+    function CodexSettings() {
+      const [auth, setAuth] = useState(null)
+      const [defaultModel, setDefaultModel] = useState('')
+      const [autoConsult, setAutoConsult] = useState(true)
+      const [allowLan, setAllowLan] = useState(false)
+      const [models, setModels] = useState([])
+      const [modelsError, setModelsError] = useState('')
+      const [error, setError] = useState('')
+      const [notice, setNotice] = useState('')
+      const [busy, setBusy] = useState(false)
+      const [logging, setLogging] = useState(false)
+      const [network, setNetwork] = useState(null)
+      const [checking, setChecking] = useState(false)
+      const pollRef = useRef(null)
+      const initialized = useRef(false)
+
+      const loadModels = useCallback(async (force) => {
+        try {
+          const path = force ? API + '?models=1' : API + '?models=1'
+          const data = await request(path, { headers: { Accept: 'application/json' }, cache: 'no-store' })
+          setModels(Array.isArray(data.models) ? data.models : [])
+          setModelsError(data.error || '')
+        } catch (modelsFailure) {
+          setModelsError(String(modelsFailure.message || modelsFailure))
+        }
+      }, [])
+
+      const loadAll = useCallback(async () => {
+        try {
+          const data = await loadState('')
+          setAuth(data.auth || { loggedIn: false })
+          if (!initialized.current) {
+            initialized.current = true
+            setDefaultModel(data.global.defaultModel || '')
+            setAutoConsult(data.global.autoConsult !== false)
+            setAllowLan(data.global.allowLanAccess === true)
+          }
+          if (data.auth && data.auth.loggedIn) await loadModels(false)
+        } catch (loadFailure) {
+          setError(String(loadFailure.message || loadFailure))
+        }
+      }, [loadModels])
+
+      useEffect(() => {
+        void loadAll()
+        return () => {
+          if (pollRef.current) {
+            clearInterval(pollRef.current)
+            pollRef.current = null
+          }
+        }
+      }, [loadAll])
+
+      const stopPolling = useCallback(() => {
+        if (pollRef.current) {
+          clearInterval(pollRef.current)
+          pollRef.current = null
+        }
+        setLogging(false)
+      }, [])
+
+      const startLogin = useCallback(async () => {
+        setError('')
+        setNotice('')
+        setLogging(true)
+        try {
+          const data = await postOp({ op: 'login' })
+          const url = data.result && data.result.url
+          if (!url) throw new Error('没有拿到 OpenAI 授权地址')
+          if (typeof window !== 'undefined') {
+            const opened = window.open(url, '_blank', 'noopener')
+            if (!opened) setNotice('浏览器拦截了弹窗，请手动打开：' + url)
+            else setNotice('已打开 OpenAI 登录页；完成授权后本页会自动更新。')
+          }
+          if (pollRef.current) clearInterval(pollRef.current)
+          let attempts = 0
+          pollRef.current = setInterval(async () => {
+            attempts += 1
+            try {
+              const status = await request(API + '?auth=1', { headers: { Accept: 'application/json' }, cache: 'no-store' })
+              if (status.auth && status.auth.loggedIn) {
+                stopPolling()
+                setAuth(status.auth)
+                setNotice('登录成功，已获取模型列表。')
+                await loadModels(true)
+                return
+              }
+            } catch {
+              // 轮询失败继续等
+            }
+            if (attempts > 150) {
+              stopPolling()
+              setError('登录等待超时，请重试。')
+            }
+          }, 2000)
+        } catch (loginFailure) {
+          stopPolling()
+          setError('发起登录失败：' + String(loginFailure.message || loginFailure))
+        }
+      }, [loadModels, stopPolling])
+
+      const logout = useCallback(async () => {
+        setBusy(true)
+        setError('')
+        setNotice('')
+        try {
+          await postOp({ op: 'logout' })
+          setAuth({ loggedIn: false })
+          setModels([])
+          setModelsError('')
+          stopPolling()
+          setNotice('已退出 OpenAI 登录。')
+        } catch (logoutFailure) {
+          setError(String(logoutFailure.message || logoutFailure))
+        } finally {
+          setBusy(false)
+        }
+      }, [stopPolling])
+
+      const refreshModels = useCallback(async () => {
+        setError('')
+        setNotice('')
+        try {
+          const data = await postOp({ op: 'listModels' })
+          const result = data.result || {}
+          setModels(Array.isArray(result.models) ? result.models : [])
+          setModelsError(result.error || '')
+          setNotice(`已从 OpenAI 拉取 ${Array.isArray(result.models) ? result.models.length : 0} 个模型。`)
+        } catch (modelsFailure) {
+          setError('拉取模型列表失败：' + String(modelsFailure.message || modelsFailure))
+        }
+      }, [])
+
+      const save = useCallback(async () => {
+        setBusy(true)
+        setError('')
+        setNotice('')
+        try {
+          await postOp({
+            op: 'setGlobal',
+            patch: { defaultModel, autoConsult, allowLanAccess: allowLan },
+          })
+          setNotice('已保存并生效。')
+        } catch (saveFailure) {
+          setError(String(saveFailure.message || saveFailure))
+        } finally {
+          setBusy(false)
+        }
+      }, [defaultModel, autoConsult, allowLan])
+
+      const checkNetwork = useCallback(async () => {
+        setChecking(true)
+        setError('')
+        setNotice('')
+        try {
+          const data = await postOp({ op: 'testNetwork' })
+          setNetwork(data.result || null)
+        } catch (networkFailure) {
+          setError('外网连通性检查失败：' + String(networkFailure.message || networkFailure))
+        } finally {
+          setChecking(false)
+        }
+      }, [])
+
+      if (!auth) return h('div', { style: styles.hint }, 'Codex 设置加载中…')
+
+      const loggedIn = auth.loggedIn === true
+      const untilDate = formatDate(auth.activeUntil)
+      const today = new Date().toISOString().slice(0, 10)
+      const untilText = untilDate
+        ? untilDate >= today
+          ? `订阅有效至 ${untilDate}`
+          : `订阅周期至 ${untilDate}（已结束）`
+        : ''
+      const modelOptions = [...new Set([...(defaultModel ? [defaultModel] : []), ...models.map((item) => item.slug)])]
+
+      return h(
+        'div',
+        { style: styles.page },
+        // ── OpenAI 账号 ──────────────────────────────────────────────
+        h(
+          'div',
+          { style: styles.card },
+          h('div', { style: styles.title }, '🔐 OpenAI 账号'),
+          loggedIn
+            ? h(
+                'div',
+                { style: styles.row },
+                h('span', { style: styles.badge }, auth.planLabel || '已登录'),
+                h('span', { style: { fontSize: '13px' } }, auth.email || '（未返回邮箱）'),
+                untilText ? h('span', { style: styles.hint }, untilText) : null,
+                h(
+                  'button',
+                  { type: 'button', style: { ...styles.button, marginLeft: 'auto' }, onClick: logout, disabled: busy },
+                  '退出登录',
+                ),
+              )
+            : h(
+                'div',
+                { style: styles.row },
+                h(
+                  'button',
+                  { type: 'button', style: styles.buttonPrimary, onClick: startLogin, disabled: logging },
+                  logging ? '等待授权…' : '登录 OpenAI 账号',
+                ),
+                h('span', { style: styles.hint }, '点击后会打开 OpenAI 官网，登录并同意授权即可；无需手动填写 API Key。'),
+              ),
+          h(
+            'div',
+            { style: styles.hint },
+            '登录使用与 Codex CLI 相同的官方 OAuth 客户端，凭证只保存在本机（$DSH_HOME/dsh-codex-auth.json）。',
+          ),
+          h(
+            'div',
+            { style: styles.row },
+            h(
+              'button',
+              { type: 'button', style: styles.button, onClick: checkNetwork, disabled: checking },
+              checking ? '检查中…' : '外网连通性检查',
+            ),
+            h(
+              'button',
+              { type: 'button', style: styles.button, onClick: startLogin, disabled: logging || !loggedIn },
+              '重新登录',
+            ),
+          ),
+          network
+            ? h(
+                'div',
+                { style: { display: 'flex', flexDirection: 'column', gap: '4px' } },
+                h(
+                  'div',
+                  { style: styles.hint },
+                  `外网连通性：${network.reachable}/${network.total} 条链路可达（能拿到 HTTP 响应即算可达）`,
+                ),
+                (network.targets || []).map((target) =>
+                  h(
+                    'div',
+                    { key: target.id, style: { display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px' } },
+                    h('span', {
+                      style: {
+                        width: '7px',
+                        height: '7px',
+                        borderRadius: '50%',
+                        flex: '0 0 auto',
+                        background: target.ok ? '#2fa84f' : '#d9534f',
+                      },
+                    }),
+                    h('span', { style: { minWidth: '96px' } }, target.label),
+                    h(
+                      'span',
+                      { style: { opacity: 0.65, flex: 1 } },
+                      target.ok
+                        ? `可达 · HTTP ${target.status} · ${target.latencyMs}ms`
+                        : `不可达 · ${target.error || '连接失败'}（${target.latencyMs}ms）`,
+                    ),
+                  ),
+                ),
+              )
+            : null,
+        ),
+        // ── Codex 设置 ──────────────────────────────────────────────
+        h(
+          'div',
+          { style: styles.card },
+          h('div', { style: styles.title }, '🛠️ Codex 设置'),
+          h(
+            'div',
+            { style: styles.row },
+            h('span', { style: styles.label }, '默认模型'),
+            h(
+              'select',
+              {
+                style: styles.select,
+                value: defaultModel,
+                onChange: (event) => setDefaultModel(event.target.value),
+                disabled: !loggedIn,
+              },
+              modelOptions.length === 0
+                ? h('option', { value: '' }, '登录后自动获取')
+                : modelOptions.map((slug) =>
+                    h('option', { key: slug, value: slug }, slug),
+                  ),
+            ),
+            h(
+              'button',
+              { type: 'button', style: styles.button, onClick: refreshModels, disabled: !loggedIn },
+              '刷新模型列表',
+            ),
+          ),
+          models.length > 0
+            ? h(
+                'div',
+                { style: styles.hint },
+                `可选模型 ${models.length} 个：${models
+                  .slice(0, 6)
+                  .map((item) => item.slug + (item.contextWindow ? `（${Math.round(item.contextWindow / 1000)}K）` : ''))
+                  .join('、')}${models.length > 6 ? '…' : ''}`,
+              )
+            : modelsError
+              ? h('div', { style: styles.error }, '模型列表不可用：' + modelsError)
+              : null,
+          h(
+            'div',
+            { style: styles.row },
+            h('span', { style: styles.label }, '自主调用'),
+            h(
+              'label',
+              { style: { display: 'inline-flex', alignItems: 'center', gap: '8px', cursor: 'pointer' } },
+              h(ToggleBox, { on: autoConsult }),
+              h(
+                'span',
+                { onClick: () => setAutoConsult(!autoConsult), style: { fontSize: '13px' } },
+                autoConsult ? '已授权会话可按任务强度自主调用' : '仅在用户明确要求时调用',
+              ),
+            ),
+          ),
+          h(
+            'div',
+            { style: styles.row },
+            h(ToggleBox, { on: allowLan }),
+            h(
+              'span',
+              { onClick: () => setAllowLan(!allowLan), style: { fontSize: '13px', cursor: 'pointer' } },
+              '允许局域网设备读写本插件状态（默认仅本机）',
+            ),
+          ),
+          h(
+            'div',
+            { style: styles.row },
+            h(
+              'button',
+              { type: 'button', style: styles.buttonPrimary, onClick: save, disabled: busy },
+              busy ? '保存中…' : '保存',
+            ),
+          ),
+          notice ? h('div', { style: styles.notice }, notice) : null,
+          error ? h('div', { style: styles.error }, error) : null,
+        ),
+        // ── 使用方式 ────────────────────────────────────────────────
+        h(
+          'div',
+          { style: styles.card },
+          h('div', { style: styles.title }, '使用方式'),
+          h('div', { style: styles.hint }, '1. 点「登录 OpenAI 账号」，在官网完成授权（不用填 Key）。'),
+          h('div', { style: styles.hint }, '2. 登录后模型列表会自动从 OpenAI 拉取，选一个默认模型并保存。'),
+          h('div', { style: styles.hint }, '3. 回到对话，点输入框左侧的「Codex」按钮授权当前会话（按钮变蓝）。'),
+          h('div', { style: styles.hint }, '4. 之后遇到高难度任务，DeepSeek 会自主调用 Codex；未授权的会话不产生任何额度消耗。'),
+        ),
       )
     }
 
@@ -709,6 +738,7 @@ window.__ModuleLoader__.load({
               name: 'conversation.input.left',
               id: 'codex-toggle',
               order: 4,
+              inject: (sessionId) => ({ sessionId }),
             },
             CodexToggle,
           ),
@@ -724,7 +754,6 @@ window.__ModuleLoader__.load({
             CodexSettings,
           ),
         )
-        // 侧边栏底部用量卡片（拿不到 Codex 用量时组件自身返回 null）。
         ctx.slots.inject('sidebar.footer.action', () =>
           ctx.slots.register(
             {

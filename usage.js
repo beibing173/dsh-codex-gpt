@@ -269,12 +269,14 @@ async function refreshAuth(auth, signal) {
       last_refresh: new Date().toISOString(),
     }
     delete next.path
-    try {
-      const tmp = `${auth.path}.dsh-codex.tmp`
-      writeFileSync(tmp, JSON.stringify(next, null, 2), 'utf8')
-      renameSync(tmp, auth.path)
-    } catch {
-      // 写回失败：本进程继续用新 token
+    if (typeof auth.path === 'string' && auth.path) {
+      try {
+        const tmp = `${auth.path}.dsh-codex.tmp`
+        writeFileSync(tmp, JSON.stringify(next, null, 2), 'utf8')
+        renameSync(tmp, auth.path)
+      } catch {
+        // 写回失败：本进程继续用新 token
+      }
     }
     return json.access_token
   } catch {
@@ -294,6 +296,7 @@ export function __resetUsageCache() {
  * @param {object} [options]
  * @param {Record<string, string | undefined>} [options.env] 进程环境。
  * @param {string} [options.homeDir] 主目录覆盖（测试用）。
+ * @param {object} [options.credential] 插件自己的 OAuth 凭证（登录后传入，优先）。
  * @param {AbortSignal} [options.signal] 取消信号。
  * @returns {Promise<object>} 卡片数据；不可用时 `{ available: false, reason }`。
  */
@@ -302,10 +305,23 @@ export async function getCodexUsage(options = {}) {
   if (cache && cache.expiresAt > now) return cache.value
   const env = options.env || {}
   const signal = options.signal
+  const injected = options.credential
+  // 优先用插件自己的 OAuth 登录；没有时回退 Codex CLI 的 auth.json。
+  const injectedAuth =
+    injected && typeof injected.accessToken === 'string' && injected.accessToken
+      ? {
+          __injected: true,
+          tokens: {
+            access_token: injected.accessToken,
+            id_token: injected.idToken,
+            account_id: injected.accountId,
+          },
+        }
+      : undefined
 
   let value
   try {
-    const auth = readCodexAuth(env, options.homeDir)
+    const auth = injectedAuth || readCodexAuth(env, options.homeDir)
     if (!auth) {
       value = { available: false, reason: 'no-auth' }
     } else {
@@ -333,8 +349,10 @@ export async function getCodexUsage(options = {}) {
         value = { available: false, reason: 'no-rate-limit' }
       } else {
         // 订阅状态优先用 id_token（含有效期）；拿不到时退回 usage 的 plan_type。
-        const subscription = subscriptionFromToken(tokens.id_token) || subscriptionFromToken(accessToken) || {}
-        const plan = parsed.plan || subscription.plan
+        const subscription = injectedAuth
+          ? { activeStart: injected.activeStart, activeUntil: injected.activeUntil }
+          : subscriptionFromToken(tokens.id_token) || subscriptionFromToken(accessToken) || {}
+        const plan = parsed.plan || (injectedAuth ? injected.plan : subscription.plan)
         value = {
           available: true,
           plan,

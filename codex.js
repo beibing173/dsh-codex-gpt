@@ -1,13 +1,16 @@
 /**
- * dsh-codex / OpenAI 调用层。
+ * dsh-codex / Codex 后端调用层（OAuth 版）。
  *
- * 只负责「把一次 Codex 咨询发出去、把文本收回来」，不碰 Harness 状态：
- *   - 首选 Responses API（Codex / GPT-5 系列的原生接口）；
- *   - 代理只实现了 Chat Completions 时，遇到 404/405 自动回退一次；
- *   - 结果文本从多种响应形态里提取，空结果视为失败。
+ * 使用与官方 Codex CLI 相同的 ChatGPT 后端（不是 api.openai.com API Key）：
+ *   - 推理：POST https://chatgpt.com/backend-api/codex/responses（SSE）
+ *   - 模型：GET  https://chatgpt.com/backend-api/codex/models?client_version=1.0.0
+ * 两者都需要 OAuth access_token，并带 `originator: codex_cli_rs` 头（服务端白名单）。
  *
- * 调用方（index.js）负责授权检查、API Key 解析、超时与错误呈现。
+ * 额度走 ChatGPT 订阅（侧边栏卡片的 5 小时 / 每周限额），不产生 API 计费。
  */
+const BACKEND = 'https://chatgpt.com/backend-api/codex'
+const ORIGINATOR = 'codex_cli_rs'
+const MODELS_TIMEOUT_MS = 15_000
 
 /** analyze 模式：只做分析、评审、定位，不改代码。 */
 export const ANALYZE_INSTRUCTIONS = [
@@ -32,7 +35,7 @@ export const BUILD_INSTRUCTIONS = [
   '5. 输出使用 Markdown，代码块标注语言。',
 ].join('\n')
 
-/** 组装用户输入：任务 + 可选上下文，上下文放后面避免淹没任务。 */
+/** 组装用户输入：任务 + 可选上下文。 */
 export function composeUserInput(task, context) {
   const head = String(task ?? '').trim()
   const tail = String(context ?? '').trim()
@@ -53,9 +56,8 @@ export function extractResponsesText(json) {
         if (typeof item === 'string') chunks.push(item)
         continue
       }
-      // reasoning 项不是答案，跳过。
       if (item.type === 'reasoning') continue
-      if (typeof item.text === 'string' && item.type !== 'reasoning') {
+      if (typeof item.text === 'string') {
         chunks.push(item.text)
         continue
       }
@@ -74,122 +76,174 @@ export function extractResponsesText(json) {
   return chunks.join('\n\n').trim()
 }
 
-/** Chat Completions 的文本提取（兼容代理）。 */
-export function extractChatText(json) {
-  if (!json || typeof json !== 'object') return ''
-  const choice = Array.isArray(json.choices) ? json.choices[0] : undefined
-  const content = choice && choice.message ? choice.message.content : undefined
-  if (typeof content === 'string') return content.trim()
-  if (Array.isArray(content)) {
-    return content
-      .map((part) => (typeof part === 'string' ? part : typeof part?.text === 'string' ? part.text : ''))
-      .join('')
-      .trim()
-  }
-  return ''
-}
-
 /**
- * 发一次 JSON POST，非 2xx 抛错（错误对象带 status，供回退判断）。
- * @param {string} url 完整 URL。
- * @param {object} body 请求体。
- * @param {string} apiKey Bearer key。
- * @param {AbortSignal | undefined} signal 取消/超时信号。
- * @returns {Promise<object>} 解析后的 JSON。
+ * 解析 Codex 后端的 SSE 文本。
+ * 优先拼接 `response.output_text.delta`；没有 delta 时退回 `response.completed` 的完整输出。
+ * @param {string} sseText 原始 SSE 响应体。
+ * @returns {string} 回答文本。
  */
-async function postJson(url, body, apiKey, signal) {
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      'Content-Type': 'application/json',
-      Accept: 'application/json',
-    },
-    body: JSON.stringify(body),
-    signal,
-  })
-  const raw = await response.text()
-  let json
-  try {
-    json = raw ? JSON.parse(raw) : undefined
-  } catch {
-    json = undefined
+export function parseCodexSse(sseText) {
+  const deltas = []
+  let completedText = ''
+  let failure = ''
+  for (const line of String(sseText ?? '').split(/\r?\n/)) {
+    const trimmed = line.trim()
+    if (!trimmed.startsWith('data:')) continue
+    const payload = trimmed.slice(5).trim()
+    if (!payload || payload === '[DONE]') continue
+    let event
+    try {
+      event = JSON.parse(payload)
+    } catch {
+      continue
+    }
+    if (!event || typeof event !== 'object') continue
+    const type = event.type
+    if (type === 'response.output_text.delta' && typeof event.delta === 'string') {
+      deltas.push(event.delta)
+      continue
+    }
+    if (type === 'response.completed' || type === 'response.done') {
+      const response = event.response && typeof event.response === 'object' ? event.response : undefined
+      const text = response ? extractResponsesText(response) : ''
+      if (text) completedText = text
+      continue
+    }
+    if (type === 'response.failed' || type === 'response.error' || type === 'error') {
+      const response = event.response && typeof event.response === 'object' ? event.response : undefined
+      failure =
+        (response && response.error && (response.error.message || response.error.code)) ||
+        (event.error && (event.error.message || event.error.code)) ||
+        event.message ||
+        type
+      continue
+    }
+    if (event.object === 'response' && !completedText) {
+      const text = extractResponsesText(event)
+      if (text) completedText = text
+    }
   }
-  if (!response.ok) {
-    const detail =
-      (json && json.error && (json.error.message || json.error.code)) ||
-      (raw ? raw.slice(0, 800) : '') ||
-      response.statusText ||
-      'unknown error'
-    const error = new Error(`OpenAI HTTP ${response.status}: ${detail}`)
-    error.status = response.status
-    throw error
+  if (failure) throw new Error(String(failure))
+  return (deltas.join('') || completedText).trim()
+}
+
+/** Codex 后端的请求头。 */
+function codexHeaders(accessToken, accountId, { stream }) {
+  const headers = {
+    Authorization: `Bearer ${accessToken}`,
+    originator: ORIGINATOR,
+    Accept: stream ? 'text/event-stream' : 'application/json',
   }
-  if (!json || typeof json !== 'object') {
-    throw new Error('OpenAI 返回了无法解析的响应体')
-  }
-  return json
+  if (typeof accountId === 'string' && accountId) headers['chatgpt-account-id'] = accountId
+  if (stream) headers['Content-Type'] = 'application/json'
+  return headers
 }
 
 /**
- * 调用 Codex / GPT。
+ * 调用 Codex 后端做一次分析/构建。
  * @param {object} options
- * @param {string} options.apiKey OpenAI API Key。
- * @param {string} options.baseUrl API 基址（可带或不带结尾斜杠）。
- * @param {string} options.model 模型名。
+ * @param {string} options.accessToken OAuth access_token。
+ * @param {string} [options.accountId] ChatGPT account id。
+ * @param {string} options.model 模型 slug。
  * @param {'analyze' | 'build'} options.mode 任务模式。
  * @param {string} options.task 任务正文。
  * @param {string} [options.context] 附加上下文。
- * @param {number} [options.maxOutputTokens] 输出上限（0/undefined = 不设置）。
  * @param {AbortSignal} [options.signal] 取消/超时信号。
  * @returns {Promise<{ text: string, model: string, endpoint: string }>}
  */
-export async function callCodex(options) {
-  const {
-    apiKey,
-    baseUrl,
-    model,
-    mode,
-    task,
-    context,
-    maxOutputTokens = 0,
-    signal,
-  } = options
-  const base = String(baseUrl || 'https://api.openai.com/v1').replace(/\/+$/, '')
+export async function callCodexBackend(options) {
+  const { accessToken, accountId, model, mode, task, context, signal, timeoutMs = 240_000 } = options
   const instructions = mode === 'build' ? BUILD_INSTRUCTIONS : ANALYZE_INSTRUCTIONS
   const userText = composeUserInput(task, context)
-
-  const responsesBody = {
+  const body = {
     model,
     instructions,
-    input: [
-      {
-        role: 'user',
-        content: [{ type: 'input_text', text: userText }],
-      },
-    ],
+    input: [{ role: 'user', content: [{ type: 'input_text', text: userText }] }],
+    stream: true,
+    store: false,
   }
-  if (maxOutputTokens > 0) responsesBody.max_output_tokens = maxOutputTokens
-
-  try {
-    const json = await postJson(`${base}/responses`, responsesBody, apiKey, signal)
-    const text = extractResponsesText(json)
-    if (!text) throw new Error('OpenAI 返回为空（Responses API 未找到输出文本）')
-    return { text, model, endpoint: 'responses' }
-  } catch (error) {
-    // 只对「接口不存在」回退；鉴权、限流、模型错等原样抛出。
-    if (!error || (error.status !== 404 && error.status !== 405)) throw error
-    const chatBody = {
-      model,
-      messages: [
-        { role: 'system', content: instructions },
-        { role: 'user', content: userText },
-      ],
+  const timeout = AbortSignal.timeout(timeoutMs)
+  const composed =
+    signal && typeof AbortSignal.any === 'function' ? AbortSignal.any([signal, timeout]) : timeout
+  const response = await fetch(`${BACKEND}/responses`, {
+    method: 'POST',
+    headers: codexHeaders(accessToken, accountId, { stream: true }),
+    body: JSON.stringify(body),
+    signal: composed,
+  })
+  const raw = await response.text()
+  if (!response.ok) {
+    let detail = raw.slice(0, 800)
+    try {
+      const json = JSON.parse(raw)
+      detail = (json.error && (json.error.message || json.error.code)) || json.message || detail
+    } catch {
+      // 保留原始文本
     }
-    if (maxOutputTokens > 0) chatBody.max_tokens = maxOutputTokens
-    const json = await postJson(`${base}/chat/completions`, chatBody, apiKey, signal)
-    const text = extractChatText(json)
-    if (!text) throw new Error('OpenAI 返回为空（Chat Completions 未找到输出文本）')
-    return { text, model, endpoint: 'chat/completions' }
+    const error = new Error(`Codex HTTP ${response.status}: ${detail || response.statusText}`)
+    error.status = response.status
+    throw error
   }
+  const contentType = response.headers.get('content-type') || ''
+  if (contentType.includes('application/json')) {
+    let json
+    try {
+      json = JSON.parse(raw)
+    } catch {
+      json = undefined
+    }
+    const text = extractResponsesText(json)
+    if (!text) throw new Error('Codex 返回为空')
+    return { text, model, endpoint: 'codex/responses' }
+  }
+  const text = parseCodexSse(raw)
+  if (!text) throw new Error('Codex 返回为空')
+  return { text, model, endpoint: 'codex/responses' }
+}
+
+/**
+ * 从 OpenAI 实时拉取当前账号可用的 Codex 模型列表。
+ * @param {{ accessToken: string, accountId?: string, signal?: AbortSignal }} options
+ * @returns {Promise<Array<{ slug: string, displayName: string, contextWindow?: number }>>}
+ */
+export async function fetchCodexModels(options) {
+  const { accessToken, accountId, signal } = options
+  const timeout = AbortSignal.timeout(MODELS_TIMEOUT_MS)
+  const composed =
+    signal && typeof AbortSignal.any === 'function' ? AbortSignal.any([signal, timeout]) : timeout
+  const response = await fetch(`${BACKEND}/models?client_version=1.0.0`, {
+    method: 'GET',
+    headers: codexHeaders(accessToken, accountId, { stream: false }),
+    signal: composed,
+  })
+  const raw = await response.text()
+  if (!response.ok) {
+    const error = new Error(`模型列表 HTTP ${response.status}: ${raw.slice(0, 300) || response.statusText}`)
+    error.status = response.status
+    throw error
+  }
+  let json
+  try {
+    json = JSON.parse(raw)
+  } catch {
+    throw new Error('模型列表返回了无法解析的 JSON')
+  }
+  const entries = Array.isArray(json && json.models) ? json.models : []
+  const models = []
+  for (const entry of entries) {
+    if (!entry || typeof entry !== 'object') continue
+    const slug = typeof entry.slug === 'string' ? entry.slug.trim() : ''
+    if (!slug) continue
+    models.push({
+      slug,
+      displayName:
+        (typeof entry.display_name === 'string' && entry.display_name.trim()) ||
+        (typeof entry.name === 'string' && entry.name.trim()) ||
+        slug,
+      contextWindow: Number.isFinite(Number(entry.context_window))
+        ? Math.round(Number(entry.context_window))
+        : undefined,
+    })
+  }
+  return models
 }

@@ -286,3 +286,37 @@ test('getCodexUsage: 网络异常时 available=false 且带原因', async (t) =>
   assert.equal(usage.reason, 'request-failed')
   assert.match(usage.error, /offline/)
 })
+
+test('getCodexUsage: 插件 OAuth 凭证优先于 Codex CLI 的 auth.json', async (t) => {
+  const original = globalThis.fetch
+  t.after(() => {
+    globalThis.fetch = original
+  })
+  // 删掉 Codex CLI 凭证，确保结果只可能来自注入的插件凭证
+  rmSync(join(fakeHome, '.codex'), { recursive: true, force: true })
+  globalThis.fetch = async () => ({
+    ok: true,
+    status: 200,
+    text: async () =>
+      JSON.stringify({
+        rate_limit: { primary_window: { used_percent: 5, limit_window_seconds: 18000 } },
+      }),
+  })
+  const usage = await getCodexUsage({
+    env: {},
+    homeDir: fakeHome,
+    credential: {
+      accessToken: makeJwt({ exp: future }),
+      accountId: 'acc-plugin',
+      plan: 'plus',
+      activeStart: '2026-08-03T06:54:41+00:00',
+      activeUntil: '2026-10-03T06:54:41+00:00',
+    },
+  })
+  assert.equal(usage.available, true)
+  assert.equal(usage.plan, 'plus')
+  assert.equal(usage.planLabel, 'Plus')
+  assert.equal(usage.subscription.activeStart, '2026-08-03T06:54:41+00:00')
+  assert.equal(usage.subscription.activeUntil, '2026-10-03T06:54:41+00:00')
+  assert.equal(usage.windows.length, 1)
+})
