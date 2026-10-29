@@ -56,12 +56,25 @@ jobs:
       # 不是触发 CI 的那个提交，必须显式取 head_sha。
       TARGET_REF: ${{ inputs.ref || github.event.workflow_run.head_sha || github.sha }}
     steps:
+      # ⚠️ checkout 的 ref 只认分支名/tag 名，**不认裸 SHA**：
+      # 传 14eadc6 会报 "A branch or tag with the name '14eadc6' could not be found"。
+      # 所以这里固定先拉默认分支的全量历史，再在下一步 checkout 到目标提交。
       - name: Check out repository
         uses: actions/checkout@v7
         with:
-          ref: ${{ env.TARGET_REF }}
           # 取全量历史：生成发布说明时要按提交算 diff、找上一个 tag。
           fetch-depth: 0
+
+      # 把工作区切到 TARGET_REF 指向的具体提交。
+      # 用 checkout --detach 而非 checkout 分支，避免在分离头指针上的意外提交。
+      - name: Switch to target commit
+        run: |
+          set -euo pipefail
+          TARGET_SHA=$(git rev-parse "${TARGET_REF}^{commit}")
+          echo "目标提交: $TARGET_SHA"
+          git checkout --detach "$TARGET_SHA"
+          echo "当前 HEAD: $(git rev-parse HEAD)"
+          echo "该提交的 package.json 版本: $(git show HEAD:package.json | node -e 'let s="";process.stdin.on("data",d=>s+=d);process.stdin.on("end",()=>{try{console.log(JSON.parse(s).version)}catch(e){console.log("?")}})')"
 
       - name: Set up Node.js
         uses: actions/setup-node@v7
