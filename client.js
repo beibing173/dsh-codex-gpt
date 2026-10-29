@@ -467,7 +467,85 @@ window.__ModuleLoader__.load({
     }
     const usageLabelOf = (row) => USAGE_LABELS[row.id] || row.displayName || row.id
 
+    /**
+     * 用量卡文案：跟随 DSH 界面语言（ctx.locale）。
+     * 词典注册失败或宿主没有 locale 服务时回退中文，绝不因为取不到语言而崩。
+     */
+    const I18N_NS = 'dsh-codex-gpt'
+    const I18N = {
+      zh: {
+        balance: '余额',
+        paygo: '按量计费',
+        offPeak: '折扣价时段',
+        peak: '标准价时段',
+        peakUnknown: '时段未知',
+        nextOffPeak: '恢复标准价还有',
+        nextPeak: '进入折扣价还有',
+        loading: '正在读取…',
+        noBalance: '暂无余额数据',
+        noUsage: '暂无用量数据',
+        remaining: (n) => `剩 ${n}%`,
+        hour5: '5 小时',
+        week: '每周',
+        subUntil: (d) => `订阅有效至 ${d}`,
+        subEnded: (d) => `订阅周期至 ${d}（已结束）`,
+        resetCredits: (n) => `${n} 次重置`,
+        refreshing: '刷新中…',
+        accountBalance: '账户余额',
+        usageDefault: '用量卡默认显示',
+        usageDefaultAuto: '自动（跟随当前模型）',
+        usageDefaultHint:
+          '默认「自动」会跟着当前在用的模型走（用 ChatGPT 就显示 ChatGPT，用 DeepSeek 就显示 DeepSeek）；点卡片里当前那家的名字重新读取，点卡片其它地方切换到下一家。',
+      },
+      en: {
+        balance: 'Balance',
+        paygo: 'Pay as you go',
+        offPeak: 'Off-peak pricing',
+        peak: 'Standard pricing',
+        peakUnknown: 'Pricing window unknown',
+        nextOffPeak: 'standard pricing in',
+        nextPeak: 'off-peak pricing in',
+        loading: 'Loading…',
+        noBalance: 'No balance data',
+        noUsage: 'No usage data',
+        remaining: (n) => `${n}% left`,
+        hour5: '5 hours',
+        week: 'Weekly',
+        subUntil: (d) => `Subscribed until ${d}`,
+        subEnded: (d) => `Period ended ${d}`,
+        resetCredits: (n) => `${n} reset${n === 1 ? '' : 's'}`,
+        refreshing: 'Refreshing…',
+        accountBalance: 'Account balance',
+        usageDefault: 'Default usage card',
+        usageDefaultAuto: 'Auto (follow current model)',
+        usageDefaultHint:
+          'Auto follows the model you are using (ChatGPT model → ChatGPT card, DeepSeek model → DeepSeek card). Click the provider name to refresh, click elsewhere on the card to switch.',
+      },
+    }
+    const LOCALE_FALLBACK = { active: 'zh', locales: [], revision: 0 }
+
+    /** 订阅 DSH locale 快照；快照回退值必须是同一个对象，否则会无限重渲染。 */
+    function useLang(locale) {
+      const snapshot = useSyncExternalStore(
+        (cb) => (locale && typeof locale.subscribe === 'function' ? locale.subscribe(cb) : () => {}),
+        () => (locale && typeof locale.getSnapshot === 'function' ? locale.getSnapshot() : LOCALE_FALLBACK),
+      )
+      const active = snapshot && typeof snapshot.active === 'string' ? snapshot.active.toLowerCase() : 'zh'
+      return active.startsWith('en') ? 'en' : 'zh'
+    }
+
+    /** 按语言取文案；缺键回退中文，再缺就返回 key（不会渲染成 undefined）。 */
+    function translate(lang, key, ...args) {
+      const dict = I18N[lang] || I18N.zh
+      const value = dict[key] !== undefined ? dict[key] : I18N.zh[key]
+      if (typeof value === 'function') return value(...args)
+      return typeof value === 'string' ? value : key
+    }
+
     function CodexUsageCard(props) {
+      const locale = props && props.locale
+      const lang = useLang(locale)
+      const t = useCallback((key, ...args) => translate(lang, key, ...args), [lang])
       const wide = !(props && props.wide === false)
       const [usage, setUsage] = useState(null)
       const [rows, setRows] = useState([])
@@ -696,8 +774,8 @@ window.__ModuleLoader__.load({
       const today = new Date().toISOString().slice(0, 10)
       const untilText = untilDate
         ? untilDate >= today
-          ? `订阅有效至 ${untilDate}`
-          : `订阅周期至 ${untilDate}（已结束）`
+          ? t('subUntil', untilDate)
+          : t('subEnded', untilDate)
         : ''
       const resetCredits =
         usage && Number.isFinite(usage.resetCredits) && usage.resetCredits > 0 ? usage.resetCredits : 0
@@ -721,7 +799,7 @@ window.__ModuleLoader__.load({
               },
             }),
           ),
-          h('span', { style: usageStyles.percent }, `剩 ${Math.round(value)}%`),
+          h('span', { style: usageStyles.percent }, t('remaining', Math.round(value))),
         )
       }
 
@@ -731,7 +809,13 @@ window.__ModuleLoader__.load({
           const data = dashboard && dashboard.deepseek
           const peak = dashboard && dashboard.peak
           if (!data && !peak) {
-            return [h('div', { key: 'empty', style: { ...usageStyles.hint, fontSize: '11px' } }, busy ? '正在读取…' : '暂无余额数据')]
+            return [
+              h(
+                'div',
+                { key: 'empty', style: { ...usageStyles.hint, fontSize: '11px' } },
+                busy ? t('loading') : t('noBalance'),
+              ),
+            ]
           }
           const total = data && Number.isFinite(Number(data.total)) ? Number(data.total) : null
           const symbol = data && data.currency === 'CNY' ? '¥' : data && data.currency === 'USD' ? '$' : ''
@@ -744,7 +828,7 @@ window.__ModuleLoader__.load({
               'div',
               { key: 'balance', style: { display: 'flex', alignItems: 'baseline', gap: '6px' } },
               h('span', { style: { ...usageStyles.brand, fontSize: '19px', letterSpacing: 0 } }, amount),
-              h('span', { style: { ...usageStyles.hint, fontSize: '10px' } }, '余额'),
+              h('span', { style: { ...usageStyles.hint, fontSize: '10px' } }, t('balance')),
             ),
             h(
               'div',
@@ -762,8 +846,10 @@ window.__ModuleLoader__.load({
                 'span',
                 { style: { ...usageStyles.hint, fontSize: '10px' } },
                 peak
-                  ? `${cheap ? '折扣价时段' : '标准价时段'}${countdown ? ` · ${peak.nextLabel}还有 ${countdown}` : ''}`
-                  : '时段未知',
+                  ? `${cheap ? t('offPeak') : t('peak')}${
+                      countdown ? ` · ${cheap ? t('nextOffPeak') : t('nextPeak')} ${countdown}` : ''
+                    }`
+                  : t('peakUnknown'),
               ),
             ),
             data && data.error
@@ -774,7 +860,9 @@ window.__ModuleLoader__.load({
         const row = item.row
         if (!row) {
           // ChatGPT：本插件自己的数据
-          if (!usage) return [h('div', { key: 'empty', style: usageStyles.hint }, busy ? '正在读取…' : '暂无用量数据')]
+          if (!usage) {
+            return [h('div', { key: 'empty', style: usageStyles.hint }, busy ? t('loading') : t('noUsage'))]
+          }
           return [
             ...windows.map((window) => {
               const used = Math.max(0, Math.min(100, Number(window.usedPercent) || 0))
@@ -796,19 +884,19 @@ window.__ModuleLoader__.load({
           const amount = Number.isFinite(total) ? `${balance.currency === 'CNY' ? '¥' : ''}${total.toFixed(2)}` : '—'
           return [
             h('div', { key: 'balance', style: { ...usageStyles.brand, fontSize: '20px' } }, amount),
-            h('div', { key: 'hint', style: usageStyles.hint }, row.reason ? String(row.reason) : '账户余额'),
+            h('div', { key: 'hint', style: usageStyles.hint }, row.reason ? String(row.reason) : t('accountBalance')),
           ]
         }
         const list = Array.isArray(row.usage && row.usage.windows) ? row.usage.windows : []
         if (list.length === 0) {
-          return [h('div', { key: 'empty', style: usageStyles.hint }, row.reason ? String(row.reason) : '暂无用量数据')]
+          return [h('div', { key: 'empty', style: usageStyles.hint }, row.reason ? String(row.reason) : t('noUsage'))]
         }
         return list.map((window) => {
           const percent = Number(window.percent)
           const remaining = Number.isFinite(percent) ? 100 - percent : 0
           return bar(
             window.key,
-            window.key === '5h' ? '5 小时' : window.key === '7d' ? '每周' : String(window.key || ''),
+            window.key === '5h' ? t('hour5') : window.key === '7d' ? t('week') : String(window.key || ''),
             remaining,
             `${window.key || ''}：已用 ${Math.round(percent || 0)}%，剩余 ${Math.round(remaining)}%`,
           )
@@ -840,11 +928,15 @@ window.__ModuleLoader__.load({
             active.label,
           ),
           active.kind === 'chatgpt' && planText ? h('span', { style: usageStyles.badge }, planText) : null,
-          active.kind === 'dashboard' ? h('span', { style: usageStyles.badge }, '按量计费') : null,
+          active.kind === 'dashboard' ? h('span', { style: usageStyles.badge }, t('paygo')) : null,
           h(
             'span',
             { style: { marginLeft: 'auto', fontSize: '10px', opacity: 0.45 } },
-            resetCredits > 0 && active.kind === 'chatgpt' ? `${resetCredits} 次重置` : busy ? '刷新中…' : '',
+            resetCredits > 0 && active.kind === 'chatgpt'
+              ? t('resetCredits', resetCredits)
+              : busy
+                ? t('refreshing')
+                : '',
           ),
         ),
         ...bodyFor(active),
@@ -852,7 +944,9 @@ window.__ModuleLoader__.load({
     }
 
     /** 设置 →「ChatGPT」页。 */
-    function CodexSettings() {
+    function CodexSettings(props) {
+      const lang = useLang(props && props.locale)
+      const t = useCallback((key, ...args) => translate(lang, key, ...args), [lang])
       const [auth, setAuth] = useState(null)
       const [defaultModel, setDefaultModel] = useState('')
       const [autoConsult, setAutoConsult] = useState(true)
@@ -1422,7 +1516,7 @@ window.__ModuleLoader__.load({
           h(
             'div',
             { style: styles.row },
-            h('span', { style: styles.label }, '用量卡默认显示'),
+            h('span', { style: styles.label }, t('usageDefault')),
             h(
               'select',
               {
@@ -1430,14 +1524,12 @@ window.__ModuleLoader__.load({
                 onChange: (event) => setDefaultUsageTab(event.target.value),
                 style: styles.select,
               },
-              usageTabOptions.map((item) => h('option', { key: item.id, value: item.id }, item.label)),
+              usageTabOptions.map((item) =>
+                h('option', { key: item.id, value: item.id }, item.id === 'auto' ? t('usageDefaultAuto') : item.label),
+              ),
             ),
           ),
-          h(
-            'div',
-            { style: styles.hint },
-            '默认「自动」会跟着当前在用的模型走（用 ChatGPT 就显示 ChatGPT，用 DeepSeek 就显示 DeepSeek）；点卡片里当前那家的名字重新读取，点卡片其它地方切换到下一家。',
-          ),
+          h('div', { style: styles.hint }, t('usageDefaultHint')),
           h(
             'div',
             { style: styles.row },
@@ -1523,6 +1615,19 @@ window.__ModuleLoader__.load({
       name: 'codex-client',
       inject: ['slots'],
       apply(ctx) {
+        // 注册词典：让卡片/设置项跟随 DSH 界面语言（无 locale 服务时组件回退中文）。
+        try {
+          if (ctx.locale && typeof ctx.locale.register === 'function') {
+            const dictionary = { zh: I18N.zh, en: I18N.en }
+            if (typeof ctx.effect === 'function') {
+              ctx.effect(() => ctx.locale.register(I18N_NS, dictionary), 'dsh-codex-gpt: i18n')
+            } else {
+              ctx.locale.register(I18N_NS, dictionary)
+            }
+          }
+        } catch {
+          // 词典注册失败不影响卡片
+        }
         ctx.slots.inject('conversation.input.left', () =>
           ctx.slots.register(
             {
@@ -1551,7 +1656,7 @@ window.__ModuleLoader__.load({
               order: 60,
               label: 'ChatGPT',
             },
-            CodexSettings,
+            (props) => h(CodexSettings, { locale: ctx.locale }),
           ),
         )
         ctx.slots.inject('sidebar.footer.action', () =>
@@ -1562,7 +1667,7 @@ window.__ModuleLoader__.load({
               order: 101,
               label: 'ChatGPT 用量',
             },
-            (props) => h(CodexUsageCard, { wide: props && props.wide }),
+            (props) => h(CodexUsageCard, { wide: props && props.wide, locale: ctx.locale }),
           ),
         )
       },
