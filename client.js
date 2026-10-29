@@ -29,6 +29,33 @@ window.__ModuleLoader__.load({
     /** 保险开关开启时，用来判断「其他 provider 提供的模型名看起来像 GPT」。 */
     const LOOKS_LIKE_GPT_RE = /^(?:gpt|o[0-9]|chatgpt)/i
 
+    /** 从目录 store 里读出「provider\0model」，没有选择时给空串（保持 uSES 快照稳定）。 */
+    const selectionOf = (store) => {
+      try {
+        const snapshot = store && typeof store.getSnapshot === 'function' ? store.getSnapshot() : null
+        const current = snapshot && snapshot.current
+        return current ? `${current.provider || ''}\u0000${current.model || ''}` : ''
+      } catch {
+        return ''
+      }
+    }
+
+    /**
+     * 只读解析当前会话的模型目录（仅用于决定胶囊显示名）。
+     * modelDirectories 可能尚未就绪或未安装，任何失败都返回 null，胶囊回落到「ChatGPT」。
+     */
+    function resolveModelDirectory(ctx, sessionId) {
+      if (!ctx || !sessionId) return null
+      try {
+        const service = ctx.get('modelDirectories')
+        if (!service || typeof service.directoryFor !== 'function') return null
+        const directory = service.directoryFor(String(sessionId))
+        return directory && directory.store ? directory : null
+      } catch {
+        return null
+      }
+    }
+
     const styles = {
       page: { display: 'flex', flexDirection: 'column', gap: '14px', padding: '4px 0', maxWidth: '720px' },
       card: {
@@ -177,24 +204,67 @@ window.__ModuleLoader__.load({
 
     /** 输入框左侧的授权胶囊按钮（会话作用域）。 */
     function CodexToggle(props) {
-      const injected = props && props.sessionId ? props.sessionId : props && props.inject && props.inject.sessionId
-      const sessionId = injected ? String(injected) : ''
+      const slotProps = props || {}
+      // slots 可能把 register({inject}) 的返回值直接铺成 props，也可能挂在 props.inject 下，
+      // 两种都要认，否则「当前模型」永远读不到、胶囊就固定显示同一个名字。
+      const bag = slotProps.inject && typeof slotProps.inject === 'object' ? slotProps.inject : null
+      const readProp = (name) => {
+        if (slotProps[name] !== undefined && slotProps[name] !== null) return slotProps[name]
+        if (bag && bag[name] !== undefined && bag[name] !== null) return bag[name]
+        return undefined
+      }
+      const rawSessionId = readProp('sessionId')
+      const sessionId = rawSessionId ? String(rawSessionId) : ''
+      const directoryStore = readProp('directoryStore') || null
+      const loadModels = readProp('loadModels')
+      const resolveDirectory = readProp('resolveDirectory')
       const [state, setState] = useState({ status: 'loading', session: null, auth: null, global: null, error: '' })
       const [busy, setBusy] = useState(false)
 
       // 只读当前会话的 provider / model（不切换、不写入），仅用于决定胶囊显示的名字。
-      const directoryStore = props && props.directoryStore
-      const loadModels = props && props.loadModels
-      const selection = useSyncExternalStore(
-        directoryStore ? (listener) => directoryStore.subscribe(listener) : noopSubscribe,
-        directoryStore
-          ? () => {
-              const snapshot = directoryStore.getSnapshot()
-              const current = snapshot && snapshot.current
-              return current ? `${current.provider || ''}\u0000${current.model || ''}` : ''
-            }
+      const subscribed = useSyncExternalStore(
+        directoryStore && typeof directoryStore.subscribe === 'function'
+          ? (listener) => directoryStore.subscribe(listener)
+          : noopSubscribe,
+        directoryStore && typeof directoryStore.getSnapshot === 'function'
+          ? () => selectionOf(directoryStore)
           : emptyProviderValue,
       )
+
+      // 兜底：如果 slot 没递进来目录对象，就自己通过 modelDirectories 服务解析，
+      // 并轮询同步（订阅万一没触发也能在 0.8 秒内收敛）。
+      const [polledSelection, setPolledSelection] = useState('')
+      useEffect(() => {
+        if (directoryStore || typeof resolveDirectory !== 'function' || !sessionId) return undefined
+        let store = null
+        let unsubscribe = null
+        let stopped = false
+        const sync = () => {
+          if (stopped) return
+          try {
+            if (!store) {
+              const directory = resolveDirectory()
+              store = directory && directory.store ? directory.store : null
+              if (store && typeof store.subscribe === 'function') {
+                const off = store.subscribe(() => sync())
+                unsubscribe = typeof off === 'function' ? off : null
+              }
+            }
+            setPolledSelection(store ? selectionOf(store) : '')
+          } catch {
+            setPolledSelection('')
+          }
+        }
+        sync()
+        const timer = setInterval(sync, 800)
+        return () => {
+          stopped = true
+          clearInterval(timer)
+          if (unsubscribe) unsubscribe()
+        }
+      }, [directoryStore, resolveDirectory, sessionId])
+
+      const selection = subscribed || polledSelection
       const [provider = '', currentModelId = ''] = selection ? selection.split('\u0000') : []
 
       useEffect(() => {
@@ -1071,22 +1141,6 @@ window.__ModuleLoader__.load({
       name: 'codex-client',
       inject: ['slots'],
       apply(ctx) {
-        /**
-         * 只读解析当前会话的模型目录（用于决定胶囊显示名）。
-         * modelDirectories 可能尚未就绪或未安装，失败时返回 null，胶囊回落到「ChatGPT」。
-         */
-        const resolveModelDirectory = (sessionId) => {
-          if (!sessionId) return null
-          try {
-            const service = ctx.get('modelDirectories')
-            if (!service || typeof service.directoryFor !== 'function') return null
-            const directory = service.directoryFor(sessionId)
-            return directory && directory.store ? directory : null
-          } catch {
-            return null
-          }
-        }
-
         ctx.slots.inject('conversation.input.left', () =>
           ctx.slots.register(
             {
@@ -1094,11 +1148,13 @@ window.__ModuleLoader__.load({
               id: 'codex-toggle',
               order: 4,
               inject: (sessionId) => {
-                const directory = resolveModelDirectory(sessionId)
+                const directory = resolveModelDirectory(ctx, sessionId)
                 return {
                   sessionId,
                   directoryStore: directory ? directory.store : null,
                   loadModels: directory ? () => directory.load().catch(() => {}) : null,
+                  // 组件内的兜底解析器：slot 注入时机拿不到目录时也能自己再解析一次。
+                  resolveDirectory: () => resolveModelDirectory(ctx, sessionId),
                 }
               },
             },
