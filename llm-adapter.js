@@ -512,7 +512,21 @@ export function createCodexGptAdapter(opts) {
     })
   }
 
-  return { providerInfo, listModels, resolveModel, prepareCall, stream }
+  return {
+    providerInfo,
+    // DSH 的 LlmAdapter 基类方法：注册时会被调用，duck-typing 必须补齐。
+    providerRetryPolicy: () => undefined,
+    imageRequestPricing: () => undefined,
+    imageRequestTarget: (_provider, _model, image) => ({
+      width: Number.isFinite(image?.width) && image.width > 0 ? image.width : 2048,
+      height: Number.isFinite(image?.height) && image.height > 0 ? image.height : 2048,
+      maxBytes: 20 * 1024 * 1024,
+    }),
+    listModels,
+    resolveModel,
+    prepareCall,
+    stream,
+  }
 }
 
 /** 组装 Codex Responses 请求体。 */

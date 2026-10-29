@@ -298,6 +298,8 @@ export function apply(ctx, config) {
 
   /** 模型列表缓存（OAuth 登录后从 OpenAI 拉取）。 */
   let modelsCache = { at: 0, models: [], error: '' }
+  /** LLM 适配器注册状态（诊断用，展示在状态路由里）。 */
+  let llmAdapterStatus = { registered: false, error: '尚未注册' }
 
   const getModels = async (credential, force = false) => {
     if (!credential) return { models: [], error: '' }
@@ -527,9 +529,16 @@ export function apply(ctx, config) {
 
   const snapshot = (sessionId, credential) => {
     const auth = authSnapshot(credential)
+    let llmProviders = []
+    try {
+      llmProviders = ctx.llm.listProviders().map((provider) => ({ id: provider.id, name: provider.name }))
+    } catch {
+      llmProviders = []
+    }
     return {
       ok: true,
       auth,
+      llm: { providers: llmProviders, adapter: llmAdapterStatus },
       global: {
         defaultModel: defaultModel(),
         autoConsult: autoConsult(),
@@ -709,25 +718,34 @@ export function apply(ctx, config) {
   // 选中该 provider 的模型后，对话直接由 GPT 处理（读上下文、流式回复、工具调用）。
   try {
     ctx.effect(() => {
-      const handle = ctx.llm.registerAdapter(
-        ['chatgpt-codex'],
-        createCodexGptAdapter({
-          getCredential: async () => {
-            const credential = await ensureAccessToken(authStore)
-            return credential
-              ? { accessToken: credential.accessToken, accountId: credential.accountId }
-              : undefined
-          },
-          fetchModels: (credential) =>
-            fetchCodexModels({ accessToken: credential.accessToken, accountId: credential.accountId }),
-        }),
-      )
-      return () => {
-        try {
-          handle()
-        } catch {
-          // 已释放
+      try {
+        const handle = ctx.llm.registerAdapter(
+          ['chatgpt-codex'],
+          createCodexGptAdapter({
+            getCredential: async () => {
+              const credential = await ensureAccessToken(authStore)
+              return credential
+                ? { accessToken: credential.accessToken, accountId: credential.accountId }
+                : undefined
+            },
+            fetchModels: (credential) =>
+              fetchCodexModels({ accessToken: credential.accessToken, accountId: credential.accountId }),
+          }),
+        )
+        llmAdapterStatus = { registered: true, error: '' }
+        return () => {
+          try {
+            handle()
+          } catch {
+            // 已释放
+          }
         }
+      } catch (error) {
+        llmAdapterStatus = {
+          registered: false,
+          error: error instanceof Error ? error.message : String(error),
+        }
+        throw error
       }
     }, 'dsh-codex-gpt: ChatGPT LLM 适配器')
   } catch (error) {
