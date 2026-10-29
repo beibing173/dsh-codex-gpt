@@ -124,3 +124,18 @@ test('第三方积分的加载用独立请求序号（不能和供应商列表�
   assert.equal(body.includes('providersSeq.current'), false, '不应和供应商列表共用序号')
   assert.ok(body.includes('AbortSignal.timeout'), '应有请求超时，避免卡住刷新')
 })
+
+test('卡片页顺序：DeepSeek → ChatGPT → 其它 AI → WorkBuddy → Trae', () => {
+  const tabsBlock = source.slice(source.indexOf('const tabs = useMemo'), source.indexOf('const autoTabId'))
+  const ds = tabsBlock.indexOf("{ id: 'deepseek'")
+  const gpt = tabsBlock.indexOf("{ id: 'chatgpt'")
+  assert.ok(ds >= 0 && gpt >= 0, '缺少 deepseek / chatgpt 页')
+  assert.ok(ds < gpt, 'DeepSeek 应排在 ChatGPT 之前')
+  // 其它 AI 在循环里 push（位置在 connect 之前），connect 数组顺序决定 WB / TE
+  const connectBlock = source.slice(source.indexOf('const CONNECT_PLUGINS = ['), source.indexOf('/**', source.indexOf('const CONNECT_PLUGINS = [')))
+  const wb = connectBlock.indexOf("id: 'workbuddy'")
+  const te = connectBlock.indexOf("id: 'trae'")
+  assert.ok(wb >= 0 && te >= 0, 'connect 配置缺少 workbuddy / trae')
+  assert.ok(wb < te, 'WorkBuddy 应排在 Trae 之前')
+  assert.ok(tabsBlock.indexOf('CONNECT_PLUGINS') > tabsBlock.indexOf('for (const row of rows)'), '第三方积分应排在其它 AI 之后')
+})

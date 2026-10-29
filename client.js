@@ -503,17 +503,18 @@ window.__ModuleLoader__.load({
     /** 侧边栏底部用量卡片：可在 ChatGPT / DeepSeek / 其它已配置的 AI 之间切换。 */
     const USAGE_ACCOUNTS_PATH = '/api/deepseek-usage/accounts'
     /**
-     * 第三方 connect 插件（Trae / WorkBuddy）的只读用量端点。
+     * 第三方 connect 插件（WorkBuddy / Trae）的只读用量端点。
      * 它们各自暴露 `/plugins/<id>/usage`，返回里带 credits；卡片直接读，不复制它们的登录逻辑。
+     * 数组顺序决定卡片里的排列：WorkBuddy 在前、Trae 在后（两者都排在其它 AI 之后）。
      */
     const CONNECT_PLUGINS = [
-      { id: 'trae', label: 'Trae', path: '/plugins/dsh-connect-trae/usage', providers: ['trae', 'trae-enterprise'] },
       {
         id: 'workbuddy',
         label: 'WorkBuddy',
         path: '/plugins/dsh-connect-workbuddy/usage',
         providers: ['workbuddy', 'workbuddy-global'],
       },
+      { id: 'trae', label: 'Trae', path: '/plugins/dsh-connect-trae/usage', providers: ['trae', 'trae-enterprise'] },
     ]
 
     /**
@@ -979,11 +980,15 @@ window.__ModuleLoader__.load({
         }
       }, [loadDashboard, loadPreferred, reload, wide])
 
-      /** 可切换的 AI 列表：ChatGPT 第一，DeepSeek 第二（本插件自己算），其余来自用量插件（若装了）。 */
+      /**
+       * 可切换的 AI 列表，顺序固定为：
+       *   DeepSeek → ChatGPT → 其它已配置 AI → WorkBuddy → Trae
+       * 点卡片空白处就按这个顺序循环。
+       */
       const tabs = useMemo(() => {
         const list = [
-          { id: 'chatgpt', label: 'ChatGPT', kind: 'chatgpt', row: null },
           { id: 'deepseek', label: 'DeepSeek', kind: 'dashboard', row: null },
+          { id: 'chatgpt', label: 'ChatGPT', kind: 'chatgpt', row: null },
         ]
         const seen = new Set(['chatgpt', 'openai-codex', 'deepseek'])
         for (const row of rows) {
@@ -994,7 +999,7 @@ window.__ModuleLoader__.load({
           seen.add(row.id)
           list.push({ id: row.id, label: usageLabelOf(row), kind: row.kind, row })
         }
-        // Trae / WorkBuddy 的积分（读到才显示，未登录/未安装就不占位）。
+        // 第三方积分固定排在最后（WorkBuddy 先、Trae 后），读到才显示。
         for (const plugin of CONNECT_PLUGINS) {
           const points = connectPoints && connectPoints[plugin.id]
           if (!points || seen.has(plugin.id)) continue
@@ -1029,7 +1034,7 @@ window.__ModuleLoader__.load({
         ? tab
         : tabs.some((item) => item.id === preferredId)
           ? preferredId
-          : 'chatgpt'
+          : 'deepseek'
       const active = tabs.find((item) => item.id === activeId) || tabs[0]
 
       /** 点标题文字 = 刷新当前这一家（绕过宿主缓存，立刻打上游）。 */
@@ -1289,8 +1294,8 @@ window.__ModuleLoader__.load({
       const [defaultUsageTab, setDefaultUsageTab] = useState('auto')
       const [usageTabOptions, setUsageTabOptions] = useState([
         { id: 'auto', label: L('自动（跟随当前模型）', 'Auto (follow current model)') },
-        { id: 'chatgpt', label: 'ChatGPT' },
         { id: 'deepseek', label: 'DeepSeek' },
+        { id: 'chatgpt', label: 'ChatGPT' },
       ])
       const [currentModelLabel, setCurrentModelLabel] = useState('')
       const [pluginVersion, setPluginVersion] = useState('')
@@ -1350,12 +1355,12 @@ window.__ModuleLoader__.load({
         }
       }, [])
 
-      /** 用量卡「默认展示」的候选：ChatGPT + DeepSeek（本插件自带）+ 其它已配置的 AI。 */
+      /** 用量卡「默认展示」的候选，顺序与卡片切换一致：DeepSeek → ChatGPT → 其它已配置 AI。 */
       const loadUsageTabOptions = useCallback(async () => {
         const base = [
           { id: 'auto', label: L('自动（跟随当前模型）', 'Auto (follow current model)') },
-          { id: 'chatgpt', label: 'ChatGPT' },
           { id: 'deepseek', label: 'DeepSeek' },
+          { id: 'chatgpt', label: 'ChatGPT' },
         ]
         try {
           const response = await fetch(USAGE_ACCOUNTS_PATH, {
