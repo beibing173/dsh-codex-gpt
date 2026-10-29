@@ -140,3 +140,25 @@ test('设置页能真实渲染（未登录时的加载分支）', () => {
   const node = wrapper.type(wrapper.props)
   assert.equal(node.type, 'div')
 })
+
+test('设置页在英文环境下渲染英文文案', () => {
+  const { runtime, slots } = loadSlots()
+  const locale = {
+    active: 'en',
+    subscribe: () => () => {},
+    getSnapshot: () => ({ active: 'en', locales: ['zh', 'en'], revision: 1 }),
+  }
+  const wrapper = slots.settings.Component({ locale })
+  runtime.resetCursor()
+  const node = wrapper.type(wrapper.props)
+  const text = JSON.stringify(node)
+  assert.ok(text.includes('Loading…'), '英文环境下设置页应显示 Loading…')
+})
+
+test('设置页每个可见文案都经过 L()/t()（防止以后新加中文漏翻）', () => {
+  const settingsStart = source.indexOf('function CodexSettings(')
+  const settingsEnd = source.indexOf("name: 'codex-client'", settingsStart)
+  const body = source.slice(settingsStart, settingsEnd)
+  const calls = (body.match(/\bL\(/g) || []).length - 1 // 减去 L 的定义
+  assert.ok(calls >= 60, `设置页只有 ${calls} 处做了双语包装，疑似漏翻`)
+})

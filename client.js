@@ -627,6 +627,17 @@ window.__ModuleLoader__.load({
       const locale = props && props.locale
       const lang = useLang(locale)
       const t = (key, ...args) => translate(lang, key, ...args)
+      /** 就地双语：中文 / 英文（英文缺译时回退中文）。 */
+      const L = (zh, en) => (lang === 'en' ? en : zh)
+      /** 宿主返回的窗口标签是中文（5 小时 / 每周），英文界面下按 id 映射过去。 */
+      const chatgptWindowLabel = (window) => {
+        const id = String((window && window.id) || '')
+        const raw = String((window && window.label) || '')
+        if (lang !== 'en') return raw
+        if (id === 'primary' || raw.includes('小时') || raw.includes('5')) return '5 hours'
+        if (id === 'secondary' || raw.includes('周')) return 'Weekly'
+        return raw
+      }
       const wide = !(props && props.wide === false)
       const [usage, setUsage] = useState(null)
       const [rows, setRows] = useState([])
@@ -947,13 +958,20 @@ window.__ModuleLoader__.load({
           return [
             ...windows.map((window) => {
               const used = Math.max(0, Math.min(100, Number(window.usedPercent) || 0))
+              const left = Math.round(100 - used)
+              // 宿主的窗口标签是中文（5 小时 / 每周），英文界面下按 id 映射过去。
+              const label = chatgptWindowLabel(window)
+              const resetHint = window.resetAt
+                ? L(`, ${formatReset(window.resetAt)} 重置`, `, resets ${formatReset(window.resetAt)}`)
+                : ''
               return bar(
                 window.id || window.label,
-                window.label || '',
+                label,
                 100 - used,
-                `${window.label || ''}：已用 ${Math.round(used)}%，剩余 ${Math.round(100 - used)}%${
-                  window.resetAt ? `，${formatReset(window.resetAt)} 重置` : ''
-                }`,
+                L(
+                  `${label}：已用 ${Math.round(used)}%，剩余 ${left}%${resetHint}`,
+                  `${label}: ${Math.round(used)}% used, ${left}% left${resetHint}`,
+                ),
               )
             }),
             untilText ? h('div', { key: 'until', style: usageStyles.hint }, untilText) : null,
@@ -975,11 +993,16 @@ window.__ModuleLoader__.load({
         return list.map((window) => {
           const percent = Number(window.percent)
           const remaining = Number.isFinite(percent) ? 100 - percent : 0
+          const label =
+            window.key === '5h' ? t('hour5') : window.key === '7d' ? t('week') : String(window.key || '')
           return bar(
             window.key,
-            window.key === '5h' ? t('hour5') : window.key === '7d' ? t('week') : String(window.key || ''),
+            label,
             remaining,
-            `${window.key || ''}：已用 ${Math.round(percent || 0)}%，剩余 ${Math.round(remaining)}%`,
+            L(
+              `${label}：已用 ${Math.round(percent || 0)}%，剩余 ${Math.round(remaining)}%`,
+              `${label}: ${Math.round(percent || 0)}% used, ${Math.round(remaining)}% left`,
+            ),
           )
         })
       }
@@ -1029,6 +1052,8 @@ window.__ModuleLoader__.load({
       const locale = props && props.locale
       const lang = useLang(locale)
       const t = (key, ...args) => translate(lang, key, ...args)
+      /** 就地双语：中文 / 英文（英文缺译时回退中文）。 */
+      const L = (zh, en) => (lang === 'en' ? en : zh)
       const [auth, setAuth] = useState(null)
       const [defaultModel, setDefaultModel] = useState('')
       const [autoConsult, setAutoConsult] = useState(true)
@@ -1037,7 +1062,7 @@ window.__ModuleLoader__.load({
       const [gptNameDetect, setGptNameDetect] = useState(false)
       const [defaultUsageTab, setDefaultUsageTab] = useState('auto')
       const [usageTabOptions, setUsageTabOptions] = useState([
-        { id: 'auto', label: '自动（跟随当前模型）' },
+        { id: 'auto', label: L('自动（跟随当前模型）', 'Auto (follow current model)') },
         { id: 'chatgpt', label: 'ChatGPT' },
         { id: 'deepseek', label: 'DeepSeek' },
       ])
@@ -1102,7 +1127,7 @@ window.__ModuleLoader__.load({
       /** 用量卡「默认展示」的候选：ChatGPT + DeepSeek（本插件自带）+ 其它已配置的 AI。 */
       const loadUsageTabOptions = useCallback(async () => {
         const base = [
-          { id: 'auto', label: '自动（跟随当前模型）' },
+          { id: 'auto', label: L('自动（跟随当前模型）', 'Auto (follow current model)') },
           { id: 'chatgpt', label: 'ChatGPT' },
           { id: 'deepseek', label: 'DeepSeek' },
         ]
@@ -1185,12 +1210,12 @@ window.__ModuleLoader__.load({
             typeof navigator.clipboard.writeText === 'function'
           ) {
             await navigator.clipboard.writeText(loginUrl)
-            setNotice('授权链接已复制，粘贴到浏览器地址栏打开即可。')
+            setNotice(L('授权链接已复制，粘贴到浏览器地址栏打开即可。', 'Authorization link copied — paste it into your browser\'s address bar.'))
             return
           }
-          throw new Error('剪贴板不可用')
+          throw new Error(L('剪贴板不可用', 'Clipboard unavailable'))
         } catch {
-          if (typeof window !== 'undefined') window.prompt('复制这个授权链接：', loginUrl)
+          if (typeof window !== 'undefined') window.prompt(L('复制这个授权链接：', 'Copy this authorization link:'), loginUrl)
         }
       }, [loginUrl])
 
@@ -1201,7 +1226,7 @@ window.__ModuleLoader__.load({
         try {
           const data = await postOp({ op: 'login' })
           const url = data.result && data.result.url
-          if (!url) throw new Error('没有拿到 OpenAI 授权地址')
+          if (!url) throw new Error(L('没有拿到 OpenAI 授权地址', 'No OpenAI authorization URL returned'))
           setLoginUrl(url)
           if (typeof window !== 'undefined') {
             // noopener 会让 window.open 永远返回 null，不能据此判断是否被拦截。
@@ -1210,7 +1235,7 @@ window.__ModuleLoader__.load({
             } catch {
               // 被浏览器直接拒绝时走下面的复制兜底
             }
-            setNotice('已尝试打开 OpenAI 登录页；若没有弹出，点下方「点我复制授权链接」。')
+            setNotice(L('已尝试打开 OpenAI 登录页；若没有弹出，点下方「点我复制授权链接」。', 'Tried to open the OpenAI login page. If it did not appear, use "Copy authorization link" below.'))
           }
           if (pollRef.current) clearInterval(pollRef.current)
           let attempts = 0
@@ -1221,7 +1246,7 @@ window.__ModuleLoader__.load({
               if (status.auth && status.auth.loggedIn) {
                 stopPolling()
                 setAuth(status.auth)
-                setNotice('登录成功，已获取模型列表。')
+                setNotice(L('登录成功，已获取模型列表。', 'Signed in — model list loaded.'))
                 await loadModels(true)
                 await loadResets()
                 return
@@ -1231,12 +1256,12 @@ window.__ModuleLoader__.load({
             }
             if (attempts > 150) {
               stopPolling()
-              setError('登录等待超时，请重试。')
+              setError(L('登录等待超时，请重试。', 'Login timed out. Please try again.'))
             }
           }, 2000)
         } catch (loginFailure) {
           stopPolling()
-          setError('发起登录失败：' + String(loginFailure.message || loginFailure))
+          setError(L('发起登录失败：', 'Failed to start login: ') + String(loginFailure.message || loginFailure))
         }
       }, [loadModels, loadResets, stopPolling])
 
@@ -1250,7 +1275,7 @@ window.__ModuleLoader__.load({
           setModels([])
           setModelsError('')
           stopPolling()
-          setNotice('已退出 OpenAI 登录。')
+          setNotice(L('已退出 OpenAI 登录。', 'Signed out of OpenAI.'))
         } catch (logoutFailure) {
           setError(String(logoutFailure.message || logoutFailure))
         } finally {
@@ -1266,9 +1291,9 @@ window.__ModuleLoader__.load({
           const result = data.result || {}
           setModels(Array.isArray(result.models) ? result.models : [])
           setModelsError(result.error || '')
-          setNotice(`已从 OpenAI 拉取 ${Array.isArray(result.models) ? result.models.length : 0} 个模型。`)
+          setNotice(L(`已从 OpenAI 拉取 ${Array.isArray(result.models) ? result.models.length : 0} 个模型。`, `Fetched ${Array.isArray(result.models) ? result.models.length : 0} model(s) from OpenAI.`))
         } catch (modelsFailure) {
-          setError('拉取模型列表失败：' + String(modelsFailure.message || modelsFailure))
+          setError(L('拉取模型列表失败：', 'Failed to fetch the model list: ') + String(modelsFailure.message || modelsFailure))
         }
       }, [])
 
@@ -1289,7 +1314,7 @@ window.__ModuleLoader__.load({
               defaultUsageTab,
             },
           })
-          setNotice('已保存并生效。')
+          setNotice(L('已保存并生效。', 'Saved and applied.'))
         } catch (saveFailure) {
           setError(String(saveFailure.message || saveFailure))
         } finally {
@@ -1305,7 +1330,7 @@ window.__ModuleLoader__.load({
           const data = await postOp({ op: 'testNetwork' })
           setNetwork(data.result || null)
         } catch (networkFailure) {
-          setError('外网连通性检查失败：' + String(networkFailure.message || networkFailure))
+          setError(L('外网连通性检查失败：', 'Connectivity check failed: ') + String(networkFailure.message || networkFailure))
         } finally {
           setChecking(false)
         }
@@ -1317,7 +1342,7 @@ window.__ModuleLoader__.load({
         if (count <= 0) return
         if (typeof window !== 'undefined') {
           const ok = window.confirm(
-            `确定使用一张重置卡吗？\n\n将立即重置 5 小时 / 每周限流窗口，操作不可撤销。\n当前可用：${count} 张`,
+            L(`确定使用一张重置卡吗？\n\n将立即重置 5 小时 / 每周限流窗口，操作不可撤销。\n当前可用：${count} 张`, `Use one reset credit?\n\nThis immediately resets the 5-hour / weekly limits and cannot be undone.\nAvailable: ${count}`),
           )
           if (!ok) return
         }
@@ -1328,15 +1353,15 @@ window.__ModuleLoader__.load({
           const data = await postOp({ op: 'consumeReset' })
           const result = data.result || {}
           const messages = {
-            reset: `已重置 ${result.windowsReset || 1} 个限流窗口。`,
-            nothing_to_reset: '当前没有需要重置的限流窗口（额度还充足），本次未消耗重置卡。',
-            no_credit: '没有可用的重置卡。',
-            already_redeemed: '这次重置请求此前已完成（幂等），按成功处理。',
+            reset: L(`已重置 ${result.windowsReset || 1} 个限流窗口。`, `Reset ${result.windowsReset || 1} rate-limit window(s).`),
+            nothing_to_reset: L('当前没有需要重置的限流窗口（额度还充足），本次未消耗重置卡。', 'No rate-limit window needs resetting (quota is fine). No reset credit was consumed.'),
+            no_credit: L('没有可用的重置卡。', 'No reset credits available.'),
+            already_redeemed: L('这次重置请求此前已完成（幂等），按成功处理。', 'This reset was already completed (idempotent); treated as success.'),
           }
-          setNotice(messages[result.code] || `重置结果：${result.code || 'unknown'}`)
+          setNotice(messages[result.code] || L(`重置结果：${result.code || 'unknown'}`, `Reset result: ${result.code || 'unknown'}`))
           await loadResets()
         } catch (resetFailure) {
-          setError('重置失败：' + String(resetFailure.message || resetFailure))
+          setError(L('重置失败：', 'Reset failed: ') + String(resetFailure.message || resetFailure))
         } finally {
           setResetting(false)
         }
@@ -1347,15 +1372,15 @@ window.__ModuleLoader__.load({
         return h(
           'div',
           { style: styles.card },
-          h('div', { style: styles.title }, ' ChatGPT 设置'),
+          h('div', { style: styles.title }, L(' ChatGPT 设置', 'ChatGPT settings')),
           error
-            ? h('div', { style: styles.error }, '加载失败：' + error)
-            : h('div', { style: styles.hint }, '加载中…'),
+            ? h('div', { style: styles.error }, L('加载失败：', 'Load failed: ') + error)
+            : h('div', { style: styles.hint }, L('加载中…', 'Loading…')),
           error
             ? h(
                 'div',
                 { style: styles.row },
-                h('button', { type: 'button', style: styles.button, onClick: () => void loadAll() }, '重试'),
+                h('button', { type: 'button', style: styles.button, onClick: () => void loadAll() }, L('重试', 'Retry')),
               )
             : null,
         )
@@ -1385,18 +1410,18 @@ window.__ModuleLoader__.load({
         h(
           'div',
           { style: styles.card },
-          h('div', { style: styles.title }, '🔐 OpenAI 账号'),
+          h('div', { style: styles.title }, L('🔐 OpenAI 账号', '🔐 OpenAI account')),
           loggedIn
             ? h(
                 'div',
                 { style: styles.row },
-                h('span', { style: styles.badge }, auth.planLabel || '已登录'),
-                h('span', { style: { fontSize: '13px' } }, auth.email || '（未返回邮箱）'),
+                h('span', { style: styles.badge }, auth.planLabel || L('已登录', 'Signed in')),
+                h('span', { style: { fontSize: '13px' } }, auth.email || L('（未返回邮箱）', '(no email returned)')),
                 untilText ? h('span', { style: styles.hint }, untilText) : null,
                 h(
                   'button',
                   { type: 'button', style: { ...styles.button, marginLeft: 'auto' }, onClick: logout, disabled: busy },
-                  '退出登录',
+                  L('退出登录', 'Sign out'),
                 ),
               )
             : h(
@@ -1405,14 +1430,14 @@ window.__ModuleLoader__.load({
                 h(
                   'button',
                   { type: 'button', style: styles.buttonPrimary, onClick: startLogin, disabled: logging },
-                  logging ? '等待授权…' : '登录 OpenAI 账号',
+                  logging ? L('等待授权…', 'Waiting for authorization…') : L('登录 OpenAI 账号', 'Sign in to OpenAI'),
                 ),
-                h('span', { style: styles.hint }, '点击后会打开 OpenAI 官网，登录并同意授权即可；无需手动填写 API Key。'),
+                h('span', { style: styles.hint }, L('点击后会打开 OpenAI 官网，登录并同意授权即可；无需手动填写 API Key。', 'Opens the OpenAI website; sign in and approve. No API key needed.')),
               ),
           h(
             'div',
             { style: styles.hint },
-            '登录使用与 Codex CLI 相同的官方 OAuth 客户端，凭证只保存在本机（$DSH_HOME/dsh-codex-auth.json）。',
+            L('登录使用与 Codex CLI 相同的官方 OAuth 客户端，凭证只保存在本机（$DSH_HOME/dsh-codex-auth.json）。', 'Uses the same official OAuth client as Codex CLI; credentials stay on this machine ($DSH_HOME/dsh-codex-auth.json).'),
           ),
           h(
             'div',
@@ -1420,12 +1445,12 @@ window.__ModuleLoader__.load({
             h(
               'button',
               { type: 'button', style: styles.button, onClick: checkNetwork, disabled: checking },
-              checking ? '检查中…' : '外网连通性检查',
+              checking ? L('检查中…', 'Checking…') : L('外网连通性检查', 'Connectivity check'),
             ),
             h(
               'button',
               { type: 'button', style: styles.button, onClick: startLogin, disabled: logging || !loggedIn },
-              '重新登录',
+              L('重新登录', 'Sign in again'),
             ),
           ),
           loginUrl
@@ -1438,11 +1463,11 @@ window.__ModuleLoader__.load({
                     type: 'button',
                     style: styles.button,
                     onClick: copyLoginUrl,
-                    title: '复制完整授权链接（链接较长，桌面端窗口里放不下）',
+                    title: L('复制完整授权链接（链接较长，桌面端窗口里放不下）', 'Copy full authorization link (too long for the desktop window)'),
                   },
-                  '🔗 点我复制授权链接',
+                  L('🔗 点我复制授权链接', '🔗 Copy authorization link'),
                 ),
-                h('span', { style: styles.hint }, '复制后粘贴到浏览器地址栏即可完成授权。'),
+                h('span', { style: styles.hint }, L('复制后粘贴到浏览器地址栏即可完成授权。', 'Paste it into your browser\'s address bar to finish authorization.')),
               )
             : null,
           network
@@ -1452,7 +1477,7 @@ window.__ModuleLoader__.load({
                 h(
                   'div',
                   { style: styles.hint },
-                  `外网连通性：${network.reachable}/${network.total} 条链路可达（能拿到 HTTP 响应即算可达）`,
+                  L(`外网连通性：${network.reachable}/${network.total} 条链路可达（能拿到 HTTP 响应即算可达）`, `Connectivity: ${network.reachable}/${network.total} endpoints reachable (any HTTP response counts)`),
                 ),
                 (network.targets || []).map((target) =>
                   h(
@@ -1472,8 +1497,11 @@ window.__ModuleLoader__.load({
                       'span',
                       { style: { opacity: 0.65, flex: 1 } },
                       target.ok
-                        ? `可达 · HTTP ${target.status} · ${target.latencyMs}ms`
-                        : `不可达 · ${target.error || '连接失败'}（${target.latencyMs}ms）`,
+                        ? L(`可达 · HTTP ${target.status} · ${target.latencyMs}ms`, `Reachable · HTTP ${target.status} · ${target.latencyMs}ms`)
+                        : L(
+                            `不可达 · ${target.error || '连接失败'}（${target.latencyMs}ms）`,
+                            `Unreachable · ${target.error || 'connection failed'} (${target.latencyMs}ms)`,
+                          ),
                     ),
                   ),
                 ),
@@ -1484,11 +1512,11 @@ window.__ModuleLoader__.load({
         h(
           'div',
           { style: styles.card },
-          h('div', { style: styles.title }, '🛠️ ChatGPT 设置'),
+          h('div', { style: styles.title }, L('🛠️ ChatGPT 设置', '🛠️ ChatGPT settings')),
           h(
             'div',
             { style: styles.row },
-            h('span', { style: styles.label }, '默认模型'),
+            h('span', { style: styles.label }, L('默认模型', 'Default model')),
             h(
               'select',
               {
@@ -1497,15 +1525,15 @@ window.__ModuleLoader__.load({
                 onChange: (event) => setDefaultModel(event.target.value),
                 disabled: !loggedIn,
               },
-              h('option', { value: '' }, '自动选择（按任务自动挑）'),
+              h('option', { value: '' }, L('自动选择（按任务自动挑）', 'Auto (pick by task)')),
               modelOptions.length === 0
-                ? h('option', { value: '__none__', disabled: true }, '登录后自动获取')
+                ? h('option', { value: '__none__', disabled: true }, L('登录后自动获取', 'Fetched after sign-in'))
                 : modelOptions.map((slug) => h('option', { key: slug, value: slug }, slug)),
             ),
             h(
               'button',
               { type: 'button', style: styles.button, onClick: refreshModels, disabled: !loggedIn },
-              '刷新模型列表',
+              L('刷新模型列表', 'Refresh models'),
             ),
           ),
           models.length > 0
@@ -1518,12 +1546,12 @@ window.__ModuleLoader__.load({
                   .join('、')}${models.length > 6 ? '…' : ''}`,
               )
             : modelsError
-              ? h('div', { style: styles.error }, '模型列表不可用：' + modelsError)
+              ? h('div', { style: styles.error }, L('模型列表不可用：', 'Model list unavailable: ') + modelsError)
               : null,
           h(
             'div',
             { style: styles.row },
-            h('span', { style: styles.label }, '自主调用'),
+            h('span', { style: styles.label }, L('自主调用', 'Autonomous calls')),
             h(
               'label',
               { style: { display: 'inline-flex', alignItems: 'center', gap: '8px', cursor: 'pointer' } },
@@ -1531,7 +1559,7 @@ window.__ModuleLoader__.load({
               h(
                 'span',
                 { onClick: () => setAutoConsult(!autoConsult), style: { fontSize: '13px' } },
-                autoConsult ? '已授权会话可按任务强度自主调用' : '仅在用户明确要求时调用',
+                autoConsult ? L('已授权会话可按任务强度自主调用', 'Authorized sessions may call Codex based on task difficulty') : L('仅在用户明确要求时调用', 'Only when the user explicitly asks'),
               ),
             ),
           ),
@@ -1542,7 +1570,7 @@ window.__ModuleLoader__.load({
             h(
               'span',
               { onClick: () => setAllowLan(!allowLan), style: { fontSize: '13px', cursor: 'pointer' } },
-              '允许局域网设备只读查看本插件状态（写操作始终仅限本机）',
+              L('允许局域网设备只读查看本插件状态（写操作始终仅限本机）', 'Allow LAN devices to read this plugin\'s status (writes stay local-only)'),
             ),
           ),
           h(
@@ -1552,21 +1580,21 @@ window.__ModuleLoader__.load({
             h(
               'span',
               { onClick: () => setDelegateLight(!delegateLight), style: { fontSize: '13px', cursor: 'pointer' } },
-              'GPT 模式下轻任务交 DeepSeek V4.1 收尾（独立开关）',
+              L('GPT 模式下轻任务交 DeepSeek V4.1 收尾（独立开关）', 'In GPT mode, hand light tasks to DeepSeek V4.1 (separate switch)'),
             ),
           ),
           delegateLight
             ? h(
                 'div',
                 { style: styles.hint },
-                '开启后，ChatGPT 处理会话时可以把格式化、整理、检索归纳、润色等轻任务交给 DeepSeek V4.1 完成，再整合进回答；复杂任务仍由 GPT 直接处理。',
+                L('开启后，ChatGPT 处理会话时可以把格式化、整理、检索归纳、润色等轻任务交给 DeepSeek V4.1 完成，再整合进回答；复杂任务仍由 GPT 直接处理。', 'When enabled, ChatGPT can hand formatting, cleanup, retrieval summaries and polishing to DeepSeek V4.1, then merge the result; complex work still goes to GPT.'),
               )
             : null,
           delegateLight
             ? h(
                 'div',
                 { style: styles.row },
-                h('span', { style: styles.label }, 'DeepSeek 模型'),
+                h('span', { style: styles.label }, L('DeepSeek 模型', 'DeepSeek model')),
                 h(
                   'select',
                   {
@@ -1574,17 +1602,17 @@ window.__ModuleLoader__.load({
                     value: deepseekModel,
                     onChange: (event) => setDeepseekModel(event.target.value),
                   },
-                  h('option', { value: '' }, '自动选择（按任务自动挑）'),
+                  h('option', { value: '' }, L('自动选择（按任务自动挑）', 'Auto (pick by task)')),
                   deepseekModel && !deepseekModels.some((item) => item.id === deepseekModel)
                     ? h('option', { value: deepseekModel }, deepseekModel)
                     : null,
                   deepseekModels.length === 0
-                    ? h('option', { value: '__none__', disabled: true }, deepseekModelsError || '加载中…')
+                    ? h('option', { value: '__none__', disabled: true }, deepseekModelsError || L('加载中…', 'Loading…'))
                     : deepseekModels.map((item) =>
                         h('option', { key: item.id, value: item.id }, item.name || item.id),
                       ),
                 ),
-                h('button', { type: 'button', style: styles.button, onClick: loadDeepseekModels }, '刷新'),
+                h('button', { type: 'button', style: styles.button, onClick: loadDeepseekModels }, L('刷新', 'Refresh')),
               )
             : null,
           h(
@@ -1594,15 +1622,15 @@ window.__ModuleLoader__.load({
             h(
               'span',
               { onClick: () => setGptNameDetect(!gptNameDetect), style: { fontSize: '13px', cursor: 'pointer' } },
-              '按模型名识别 GPT（保险开关，默认关闭）',
+              L('按模型名识别 GPT（保险开关，默认关闭）', 'Detect GPT by model name (safety switch, off by default)'),
             ),
           ),
           h(
             'div',
             { style: styles.hint },
             gptNameDetect
-              ? '已开启：即使模型来自其他 provider，只要模型 id 形如 gpt-* / o3-*，输入框胶囊也会按「GPT」识别（显示 DeepSeek）。'
-              : '关闭时只认本插件的 ChatGPT provider；开启后才会额外按模型名判断，避免把别家同名模型误认成本插件的 GPT。',
+              ? L('已开启：即使模型来自其他 provider，只要模型 id 形如 gpt-* / o3-*，输入框胶囊也会按「GPT」识别（显示 DeepSeek）。', 'Enabled: model ids like gpt-* / o3-* are treated as GPT (capsule shows DeepSeek) even from other providers.')
+              : L('关闭时只认本插件的 ChatGPT provider；开启后才会额外按模型名判断，避免把别家同名模型误认成本插件的 GPT。', 'When off, only this plugin\'s ChatGPT provider counts; when on, model-name matching is added so other providers\' models are not misidentified.'),
           ),
           h(
             'div',
@@ -1627,7 +1655,7 @@ window.__ModuleLoader__.load({
             h(
               'button',
               { type: 'button', style: styles.buttonPrimary, onClick: save, disabled: busy },
-              busy ? '保存中…' : '保存',
+              busy ? L('保存中…', 'Saving…') : L('保存', 'Save'),
             ),
           ),
           notice ? h('div', { style: styles.notice }, notice) : null,
@@ -1637,7 +1665,7 @@ window.__ModuleLoader__.load({
         h(
           'div',
           { style: styles.card },
-          h('div', { style: styles.title }, '🎟️ 重置额度（重置卡）'),
+          h('div', { style: styles.title }, L('🎟️ 重置额度（重置卡）', '🎟️ Reset credits')),
           h(
             'div',
             { style: styles.hint },
@@ -1645,11 +1673,11 @@ window.__ModuleLoader__.load({
               ? resetInfo
                 ? `当前可用 ${Number(resetInfo.availableCount) || 0} 张重置卡${
                     resetInfo.credits && resetInfo.credits[0] && resetInfo.credits[0].expiresAt
-                      ? `，最近一张 ${formatDate(resetInfo.credits[0].expiresAt)} 过期`
+                      ? L(`，最近一张 ${formatDate(resetInfo.credits[0].expiresAt)} 过期`, `, earliest expires ${formatDate(resetInfo.credits[0].expiresAt)}`)
                       : ''
                   }。`
-                : '正在读取重置卡…'
-              : '登录 OpenAI 账号后可以查看和使用重置卡。',
+                : L('正在读取重置卡…', 'Reading reset credits…')
+              : L('登录 OpenAI 账号后可以查看和使用重置卡。', 'Sign in to OpenAI to view and use reset credits.'),
           ),
           resetInfo && Array.isArray(resetInfo.credits) && resetInfo.credits.length > 0
             ? h(
@@ -1659,7 +1687,7 @@ window.__ModuleLoader__.load({
                   h(
                     'div',
                     { key: credit.id, style: { fontSize: '12px', opacity: 0.7 } },
-                    `· ${credit.title}${credit.expiresAt ? `（${formatDate(credit.expiresAt)} 过期）` : ''}`,
+                    `· ${credit.title}${credit.expiresAt ? L(`（${formatDate(credit.expiresAt)} 过期）`, ` (expires ${formatDate(credit.expiresAt)})`) : ''}`,
                   ),
                 ),
               )
@@ -1675,29 +1703,29 @@ window.__ModuleLoader__.load({
                 onClick: consumeReset,
                 disabled: !loggedIn || resetting || !resetInfo || Number(resetInfo.availableCount) <= 0,
               },
-              resetting ? '重置中…' : '使用一张重置额度',
+              resetting ? L('重置中…', 'Resetting…') : L('使用一张重置额度', 'Use one reset credit'),
             ),
             h(
               'button',
               { type: 'button', style: styles.button, onClick: loadResets, disabled: !loggedIn },
-              '刷新重置卡',
+              L('刷新重置卡', 'Refresh reset credits'),
             ),
           ),
           h(
             'div',
             { style: styles.hint },
-            '重置会立即恢复 5 小时 / 每周的限流窗口，操作不可撤销；只在额度确实受限时使用。',
+            L('重置会立即恢复 5 小时 / 每周的限流窗口，操作不可撤销；只在额度确实受限时使用。', 'A reset immediately restores the 5-hour / weekly limits and cannot be undone; only use it when you are actually rate-limited.'),
           ),
         ),
         // ── 使用方式 ────────────────────────────────────────────────
         h(
           'div',
           { style: styles.card },
-          h('div', { style: styles.title }, '使用方式'),
-          h('div', { style: styles.hint }, '1. 点「登录 OpenAI 账号」，在官网完成授权（不用填 Key）。'),
-          h('div', { style: styles.hint }, '2. 登录后模型列表会自动从 OpenAI 拉取，选一个默认模型并保存。'),
-          h('div', { style: styles.hint }, '3. 回到对话，点输入框左侧胶囊按钮授权当前会话（变蓝 = 已授权）。按钮名随当前模型变化：本插件 ChatGPT 时显示「DeepSeek」，其他模型时显示「ChatGPT」。'),
-          h('div', { style: styles.hint }, '4. 之后遇到高难度任务，DeepSeek 会自主调用 ChatGPT；未授权的会话不产生任何额度消耗。'),
+          h('div', { style: styles.title }, L('使用方式', 'How to use')),
+          h('div', { style: styles.hint }, L('1. 点「登录 OpenAI 账号」，在官网完成授权（不用填 Key）。', '1. Click "Sign in to OpenAI" and approve on the official site (no key needed).')),
+          h('div', { style: styles.hint }, L('2. 登录后模型列表会自动从 OpenAI 拉取，选一个默认模型并保存。', '2. After signing in, the model list is fetched from OpenAI; pick a default model and save.')),
+          h('div', { style: styles.hint }, L('3. 回到对话，点输入框左侧胶囊按钮授权当前会话（变蓝 = 已授权）。按钮名随当前模型变化：本插件 ChatGPT 时显示「DeepSeek」，其他模型时显示「ChatGPT」。', '3. Back in the conversation, click the capsule button left of the input to authorize this session (blue = authorized). Its label follows the current model: "DeepSeek" for this plugin\'s ChatGPT, otherwise "ChatGPT".')),
+          h('div', { style: styles.hint }, L('4. 之后遇到高难度任务，DeepSeek 会自主调用 ChatGPT；未授权的会话不产生任何额度消耗。', '4. For hard tasks, DeepSeek then calls ChatGPT on its own; unauthorized sessions never consume quota.')),
         ),
       )
     }
@@ -1743,7 +1771,7 @@ window.__ModuleLoader__.load({
               order: 60,
               label: 'ChatGPT',
             },
-            (props) => h(CodexSettings, { locale: localeService }),
+            (props) => h(CodexSettings, { locale: (props && props.locale) || localeService }),
           ),
         )
         ctx.slots.inject('sidebar.footer.action', () =>
@@ -1758,7 +1786,7 @@ window.__ModuleLoader__.load({
               h(
                 CardBoundary,
                 null,
-                h(CodexUsageCard, { wide: props && props.wide, locale: localeService }),
+                h(CodexUsageCard, { wide: props && props.wide, locale: (props && props.locale) || localeService }),
               ),
           ),
         )

@@ -36,12 +36,16 @@ test('i18n: 英文词典里没有残留中文', () => {
   assert.deepEqual(chinese, [], `英文词典仍有中文：${chinese.join(' / ')}`)
 })
 
-test('i18n: 卡片可见文案都走 t()，不再硬编码中文', () => {
+test('i18n: 卡片可见文案都走 t()/L()，不再硬编码中文', () => {
   const cardStart = source.indexOf('function CodexUsageCard(')
   const cardEnd = source.indexOf('function CodexSettings(')
   assert.ok(cardStart > 0 && cardEnd > cardStart, '定位不到用量卡组件')
   const card = source.slice(cardStart, cardEnd)
-  const literals = [...card.matchAll(/'([^'\n]*[\u4e00-\u9fa5][^'\n]*)'/g)].map((m) => m[1])
+  // 白名单：这些只用于「识别宿主返回的中文标签」，不是显示文案。
+  const allowed = new Set(['小时', '周'])
+  const literals = [...card.matchAll(/'([^'\n]*[\u4e00-\u9fa5][^'\n]*)'/g)]
+    .map((m) => m[1])
+    .filter((text) => !allowed.has(text))
   assert.deepEqual(literals, [], `卡片仍有硬编码中文：${literals.join(' / ')}`)
   assert.ok(card.includes("t('balance')"), '余额文案应走 t()')
   assert.ok(card.includes("t('paygo')"), '按量计费文案应走 t()')
