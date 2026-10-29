@@ -139,8 +139,8 @@ node --test "test/codex.test.mjs" "test/usage.test.mjs" "test/host.test.mjs" "te
 
 - 状态路由 `/dsh-codex-api` 默认**仅接受本机回环地址**，并校验 `Origin`、`Sec-Fetch-Site`、`Host` 与 `Content-Type: application/json`；
 - 同源判断兼容 `127.0.0.1` / `localhost` / `[::1]` 等本机别名（协议与端口需一致），外部域名伪造 `Origin` 一律拒绝；
-- 写操作（授权、登录、登出、兑换重置卡、改配置）**必须携带同源 `Origin`**；缺失 `Origin` 或无法确定本机 origin 时直接拒绝；
-- 写操作还必须携带**进程级随机令牌** `x-dsh-write-token`：令牌只随同源 GET 快照下发给本机页面，跨站页面读不到响应体因此拿不到，代理场景下也无法伪造写操作；
+- 写操作（授权、登录、登出、兑换重置卡、改配置）**必须携带进程级随机令牌** `x-dsh-write-token`：令牌只随同源 GET 快照下发给本机页面，跨站页面读不到响应体因此拿不到，代理场景下也无法伪造写操作；
+- 请求带 `Origin` 时必须与本站同源（兼容本机别名）；桌面外壳等不发 `Origin` 的同源场景由上面的随机令牌兜底；
 - 请求若携带 `X-Forwarded-For` / `X-Real-IP` / `Forwarded` / `CF-Connecting-IP`，一律按**远程**处理，不再享受本机权限；
 - `Host` 校验不依赖 `getOrigin()` 是否可用：即使端口来源信息缺失，非回环 Host 也会被拒绝（防 DNS rebinding）；
 - `allowLanAccess: true` 时局域网设备**只能只读查询**；登录、登出、兑换重置卡等写操作必须在运行 DSH 的本机执行；

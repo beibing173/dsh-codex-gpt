@@ -751,10 +751,8 @@ export function apply(ctx, config) {
       return '局域网模式仅允许只读查询；登录/登出/兑换重置卡等操作请在运行 DSH 的本机执行。'
     }
     if (req.method === 'POST') {
-      // 写操作必须带同源 Origin：浏览器同源 POST 一定带，缺失按跨站写入处理。
-      if (!origin) return '缺少 Origin，已拒绝跨站写入。'
-      if (!expected) return '无法确认本机 origin，已拒绝写入。'
-      // 再校验本机随机令牌：即使经代理访问、Origin/Host 都可伪造，攻击者也读不到快照里的令牌。
+      // 桌面外壳（Electron/自定义协议）里的同源 POST 可能不带 Origin，此时不能直接拒绝，
+      // 否则开关/保存全部失效；改用「随机令牌 + Host 白名单」兜底，跨站页面拿不到令牌。
       if (String(req.headers['x-dsh-write-token'] || '') !== WRITE_TOKEN) {
         return '写操作缺少本机令牌，已拒绝。'
       }

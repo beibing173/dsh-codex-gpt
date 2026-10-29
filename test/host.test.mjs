@@ -501,16 +501,27 @@ test('跨站请求被拒绝（Origin / Content-Type / 非回环）', async () =>
   assert.equal(lan.status, 403)
 })
 
-test('写操作缺少 Origin 时按跨站拒绝', async () => {
+test('缺少 Origin 时由令牌兜底放行（桌面外壳场景）', async () => {
   writeAuth()
   const harness = createHarness()
-  const { status, json } = await callApi(harness, {
+  const { status } = await callApi(harness, {
     method: 'POST',
     headers: { 'content-type': 'application/json', origin: undefined },
     body: { op: 'setGlobal', patch: { autoConsult: false } },
   })
+  assert.equal(status, 200)
+})
+
+test('跨站 Origin 的写操作被拒绝', async () => {
+  writeAuth()
+  const harness = createHarness()
+  const { status, json } = await callApi(harness, {
+    method: 'POST',
+    headers: { origin: 'https://evil.example' },
+    body: { op: 'setGlobal', patch: { autoConsult: false } },
+  })
   assert.equal(status, 403)
-  assert.match(json.error, /Origin/)
+  assert.match(json.error, /跨站/)
 })
 
 test('写操作缺少本机令牌时拒绝，且令牌只在非脱敏快照下发', async () => {
