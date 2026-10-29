@@ -25,6 +25,16 @@ import { createCodexGptAdapter, LEGACY_PROVIDER_IDS, PROVIDER_ID } from './llm-a
 
 export const name = 'dsh-codex-gpt'
 
+/** 插件版本：直接读同目录 package.json，避免两处手写导致版本号对不上。 */
+export const PLUGIN_VERSION = (() => {
+  try {
+    const parsed = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8'))
+    return typeof parsed.version === 'string' ? parsed.version : ''
+  } catch {
+    return ''
+  }
+})()
+
 /** profile 条目 id：cordis.patch.yml 里 `- id: dsh-codex-gpt` 必须与此一致。 */
 export const ENTRY_ID = 'dsh-codex-gpt'
 
@@ -1034,6 +1044,7 @@ export function apply(ctx, config) {
     }
     return {
       ok: true,
+      pluginVersion: PLUGIN_VERSION,
       auth,
       llm: { providers: llmProviders, adapter: llmAdapterStatus },
       global: {
@@ -1186,6 +1197,7 @@ export function apply(ctx, config) {
           // 也不触发任何凭证写入副作用。
           sendJson(res, 200, {
             ok: true,
+            pluginVersion: PLUGIN_VERSION,
             currentModel: currentModelSelection(),
             defaultUsageTab: redacted ? '' : defaultUsageTab(),
           })

@@ -889,3 +889,11 @@ test('不支持的请求方法一律 405（不能靠 PUT/PATCH 绕过写令牌�
     assert.equal(res.status, 405, `${method} 应被拒绝`)
   }
 })
+test('快照与 meta 都带插件版本号（设置页用它显示版本）', async () => {
+  const harness = await createHarness()
+  const snap = await callApi(harness, {})
+  assert.equal(typeof snap.json.pluginVersion, 'string')
+  const meta = await callApi(harness, { url: '/dsh-codex-api?meta=1' })
+  assert.equal(typeof meta.json.pluginVersion, 'string')
+  assert.equal(meta.json.pluginVersion, snap.json.pluginVersion)
+})
