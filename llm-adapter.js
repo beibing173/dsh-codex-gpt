@@ -57,19 +57,49 @@ export function createCodexGptAdapter(opts) {
   const now = typeof opts.now === 'function' ? opts.now : Date.now
   /** 模型目录缓存：DSH 会频繁刷新模型列表，缓存 5 分钟并容忍 429。 */
   const MODELS_TTL_MS = 5 * 60 * 1000
-  /** 冷启动最长等待：超过就直接给兜底，后台继续拉，绝不卡住模型选择器。 */
+  /** 冷启动最长等待：超过就直接给上一份目录，后台继续拉，绝不卡住模型选择器。 */
   const MODELS_COLD_WAIT_MS = 1200
+  /** 目录持久化：进程重启后先拿上次的目录，避免「模型先消失、要手动重选」。 */
+  const modelsStore = opts.modelsCache && typeof opts.modelsCache === 'object' ? opts.modelsCache : null
   let modelsCache = { at: 0, models: [] }
+  /** 上次成功目录的落盘副本：只用于启动时预热，读取失败就当没有。 */
+  if (modelsStore && typeof modelsStore.load === 'function') {
+    try {
+      const stored = normalizeModels(modelsStore.load())
+      if (stored.length > 0) modelsCache = { at: 0, models: stored }
+    } catch {
+      // 缓存文件坏了不影响启动
+    }
+  }
   /** 目录刷新单飞：并发刷新只打一次上游。 */
   let modelsInflight = null
 
-  /** 后台刷新模型目录（单飞、静默失败）。 */
+  /** 把兜底模型并进目录：用户选中的模型不能因为一次刷新就「消失」。 */
+  function withFallbackModel(models) {
+    const list = Array.isArray(models) ? models : []
+    if (!fallbackModel) return list
+    if (list.some((model) => model.slug === fallbackModel)) return list
+    return [...list, { slug: fallbackModel, displayName: fallbackModel, contextWindow: DEFAULT_CONTEXT_WINDOW }]
+  }
+
+  /** 后台刷新模型目录（单飞、静默失败；成功后写盘供下次启动预热）。 */
   function refreshModels(credential) {
     if (modelsInflight) return modelsInflight
     modelsInflight = (async () => {
       try {
         const models = normalizeModels(await fetchModels(credential))
-        if (models.length > 0) modelsCache = { at: now(), models }
+        // 上游偶尔会返回比上次更短的列表（账号模型轮换），这里只接受"包含新内容"
+        // 或"确实变了"的结果，但绝不把用户正用着的兜底模型弄丢。
+        if (models.length > 0) {
+          modelsCache = { at: now(), models }
+          if (modelsStore && typeof modelsStore.save === 'function') {
+            try {
+              modelsStore.save(models)
+            } catch {
+              // 写盘失败不影响本次目录
+            }
+          }
+        }
         return modelsCache.models
       } catch {
         // 限流/网络错误时退回旧缓存，绝不把 429 抛成 UI 红字。
@@ -133,9 +163,10 @@ export function createCodexGptAdapter(opts) {
     const hasCredential = Boolean(credential && credential.accessToken)
 
     // 有目录就立刻返回；过期则后台续期（stale-while-revalidate）。
+    // 关键：返回的目录永远包含兜底/已配置模型，刷新失败也不会让用户选中的模型"消失"。
     if (cached.length > 0) {
       if (!fresh && hasCredential) void refreshModels(credential)
-      return toModelInfos(cached, provider)
+      return toModelInfos(withFallbackModel(cached), provider)
     }
     if (!hasCredential) return toModelInfos(fallbackModels(), provider)
 
@@ -147,7 +178,7 @@ export function createCodexGptAdapter(opts) {
       }),
     ])
     const models = raced && raced.length > 0 ? raced : fallbackModels()
-    return toModelInfos(models, provider)
+    return toModelInfos(withFallbackModel(models), provider)
   }
 
   /** 上游目录不可用时的兜底清单（至少一个，保证 provider 可路由）。 */

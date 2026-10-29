@@ -215,7 +215,7 @@ test('listModels: 凭证/目录不可用时返回兜底模型，绝不返回空�
     assert.deepEqual(models[0].inputModalities, ['text', 'image'])
   }
 
-  // 有正常目录时不塞兜底，直接用上游结果。
+  // 有正常目录时以上游为准，但兜底/已配置模型仍并进去（用户选中的模型不许消失）。
   const adapter = createCodexGptAdapter({
     getCredential: async () => ({ accessToken: 'at' }),
     fetchModels: async () => [{ slug: 'gpt-9-sol', displayName: 'GPT-9' }],
@@ -224,7 +224,7 @@ test('listModels: 凭证/目录不可用时返回兜底模型，绝不返回空�
   const live = await adapter.listModels(PROVIDER_ID)
   assert.deepEqual(
     live.map((model) => model.id),
-    ['gpt-9-sol'],
+    ['gpt-9-sol', 'gpt-5.6-sol'],
   )
 })
 
@@ -239,13 +239,13 @@ test('listModels: 目录没过期时不等待网络，直读缓存', async () =>
     fallbackModel: 'gpt-5.6-sol',
   })
   const first = await adapter.listModels(PROVIDER_ID)
-  assert.deepEqual(first.map((m) => m.id), ['gpt-9-sol'])
+  assert.deepEqual(first.map((m) => m.id), ['gpt-9-sol', 'gpt-5.6-sol'])
 
   // 第二次（DSH 打开选择器/切换会话时）必须命中缓存：既不重复请求上游，也不等待。
   const started = Date.now()
   const second = await adapter.listModels(PROVIDER_ID)
   const elapsed = Date.now() - started
-  assert.deepEqual(second.map((m) => m.id), ['gpt-9-sol'])
+  assert.deepEqual(second.map((m) => m.id), ['gpt-9-sol', 'gpt-5.6-sol'])
   assert.equal(calls, 1)
   assert.ok(elapsed < 50, `缓存命中应瞬时返回，实际 ${elapsed}ms`)
 })
@@ -264,12 +264,12 @@ test('listModels: 目录过期时先返回旧缓存，后台再续期', async ()
   clock += 6 * 60 * 1000 // 超过 5 分钟 TTL
 
   const stale = await adapter.listModels(PROVIDER_ID)
-  assert.deepEqual(stale.map((m) => m.id), ['gpt-1'], '过期时先给旧缓存，不阻塞')
+  assert.deepEqual(stale.map((m) => m.id), ['gpt-1', 'gpt-5.6-sol'], '过期时先给旧缓存，不阻塞')
 
   // 后台刷新完成后，下一次调用拿到新目录。
   await new Promise((resolve) => setTimeout(resolve, 10))
   const refreshed = await adapter.listModels(PROVIDER_ID)
-  assert.deepEqual(refreshed.map((m) => m.id), ['gpt-2'])
+  assert.deepEqual(refreshed.map((m) => m.id), ['gpt-2', 'gpt-5.6-sol'])
 })
 
 test('listModels: 冷启动上游卡住时按超时返回兜底，不阻塞模型选择器', async () => {
@@ -305,4 +305,31 @@ test('resolveModel: 复用目录缓存，选完模型不重打上游', async () 
   assert.equal(resolved.name, 'GPT-9')
   assert.equal(calls, 1, '解析模型应命中缓存，不应再次请求上游')
   assert.ok(elapsed < 50, `解析应瞬时完成，实际 ${elapsed}ms`)
+})
+
+test('modelsCache: 启动即用上次落盘的目录，刷新成功后再写回', async () => {
+  let saved = null
+  const adapter = createCodexGptAdapter({
+    getCredential: async () => ({ accessToken: 'at' }),
+    fetchModels: async () => [{ slug: 'gpt-new' }],
+    fallbackModel: 'gpt-5.6-sol',
+    modelsCache: {
+      load: () => [{ slug: 'gpt-old' }, { slug: 'gpt-old-2' }],
+      save: (models) => {
+        saved = models.map((model) => model.slug)
+      },
+    },
+  })
+
+  // 启动瞬间（还没联网）就要给出完整目录：模型不会先消失再要用户手动重选。
+  const started = Date.now()
+  const boot = await adapter.listModels(PROVIDER_ID)
+  assert.ok(Date.now() - started < 50, '启动时应瞬时返回落盘目录')
+  assert.deepEqual(boot.map((model) => model.id), ['gpt-old', 'gpt-old-2', 'gpt-5.6-sol'])
+
+  // 后台刷新完成后：新目录写盘，并替换为最新列表。
+  await new Promise((resolve) => setTimeout(resolve, 20))
+  assert.deepEqual(saved, ['gpt-new'])
+  const next = await adapter.listModels(PROVIDER_ID)
+  assert.deepEqual(next.map((model) => model.id), ['gpt-new', 'gpt-5.6-sol'])
 })

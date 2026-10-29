@@ -387,6 +387,39 @@ export function apply(ctx, config) {
     homeDir: () => join(homedir(), '.dsh'),
   })
 
+  /**
+   * 模型目录的落盘缓存（$DSH_HOME/dsh-codex-models.json）。
+   * 目的是让插件刚启动、上游还没返回时，模型选择器也能拿到上次的完整目录——
+   * 否则只给兜底模型，用户选中的模型会"消失"，必须手动重选一次。
+   */
+  const modelsCacheStore = (() => {
+    const env = (typeof process !== 'undefined' && process.env) || {}
+    const file = () => join(env.DSH_HOME || join(homedir(), '.dsh'), 'dsh-codex-models.json')
+    return {
+      load() {
+        try {
+          const parsed = JSON.parse(readFileSync(file(), 'utf8'))
+          const models = parsed && Array.isArray(parsed.models) ? parsed.models : []
+          return models.filter((model) => model && typeof model.slug === 'string' && model.slug)
+        } catch {
+          return []
+        }
+      },
+      save(models) {
+        const target = file()
+        const payload = { version: 1, at: Date.now(), models }
+        try {
+          mkdirSync(dirname(target), { recursive: true })
+          const tmp = `${target}.${process.pid}.tmp`
+          writeFileSync(tmp, JSON.stringify(payload), 'utf8')
+          renameSync(tmp, target)
+        } catch (error) {
+          warn('模型目录缓存写入失败（不影响本次使用）', error)
+        }
+      },
+    }
+  })()
+
   /** 模型列表缓存（OAuth 登录后从 OpenAI 拉取）。 */
   let modelsCache = { at: 0, models: [], error: '' }
   /** 模型列表单飞：并发刷新共用一次上游请求。 */
@@ -1049,6 +1082,8 @@ export function apply(ctx, config) {
             fallbackModel: configuredModel() || DEFAULT_MODEL,
             // 激活后预热一次目录，模型选择器首次打开不再等网络。
             preload: true,
+            // 启动即用上次落盘的完整目录，避免「模型先消失、要手动重选」。
+            modelsCache: modelsCacheStore,
             readImage: async (attachmentRef) => {
               const stored = await ctx.attachments.readImage(attachmentRef)
               // 以读取结果为准：ref 上不一定带 mediaType，否则会拼出 data:undefined;base64 并被静默丢图。
