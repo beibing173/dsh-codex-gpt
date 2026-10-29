@@ -7,7 +7,13 @@
  * 协议：POST https://chatgpt.com/backend-api/codex/responses（SSE），
  * headers 需要 OAuth Bearer + originator: codex_cli_rs。
  */
-export const PROVIDER_ID = 'chatgpt-codex'
+export const PROVIDER_ID = 'openai-codex'
+/**
+ * 历史 provider id：0.2.x 早期版本用 `chatgpt-codex` 注册过。
+ * 老会话里保存的模型选择仍是这个 id，适配器两个都认——改成规范 id 后，
+ * 旧会话的选择依然可路由，不需要用户重新选一次模型。
+ */
+export const LEGACY_PROVIDER_IDS = ['chatgpt-codex']
 const PROVIDER_NAME = 'ChatGPT'
 /** 「自动选择」：由适配器按请求规模/工具量/思考强度挑具体模型。 */
 export const AUTO_MODEL_ID = 'auto'
@@ -93,14 +99,19 @@ export function createCodexGptAdapter(opts) {
     if (timer && typeof timer.unref === 'function') timer.unref()
   }
 
-  function providerInfo() {
-    return { id: PROVIDER_ID, name: PROVIDER_NAME }
+  /** DSH 会把注册时的路由 id 传进来；返回它的规范 id（旧别名原样返回，保证 id === provider）。 */
+  function providerInfo(provider) {
+    const requested = requestedProviderId(provider)
+    const id = requested || PROVIDER_ID
+    // 旧 id 单独起个名字，免得模型选择器里出现两个一模一样的「ChatGPT」分组。
+    return { id, name: LEGACY_PROVIDER_IDS.includes(id) ? `${PROVIDER_NAME}（旧 id）` : PROVIDER_NAME }
   }
 
   /** LlmModelInfo 只允许 provider/id/name/description/inputModalities。 */
-  function toModelInfos(models) {
+  function toModelInfos(models, provider) {
+    const owner = requestedProviderId(provider) || PROVIDER_ID
     return models.map((model) => ({
-      provider: PROVIDER_ID,
+      provider: owner,
       id: model.slug,
       name: model.displayName || model.slug,
       inputModalities: ['text', 'image'],
@@ -124,9 +135,9 @@ export function createCodexGptAdapter(opts) {
     // 有目录就立刻返回；过期则后台续期（stale-while-revalidate）。
     if (cached.length > 0) {
       if (!fresh && hasCredential) void refreshModels(credential)
-      return toModelInfos(cached)
+      return toModelInfos(cached, provider)
     }
-    if (!hasCredential) return toModelInfos(fallbackModels())
+    if (!hasCredential) return toModelInfos(fallbackModels(), provider)
 
     // 冷启动：最多等 MODELS_COLD_WAIT_MS，超时先给兜底，刷新继续在后台跑。
     const raced = await Promise.race([
@@ -136,7 +147,7 @@ export function createCodexGptAdapter(opts) {
       }),
     ])
     const models = raced && raced.length > 0 ? raced : fallbackModels()
-    return toModelInfos(models)
+    return toModelInfos(models, provider)
   }
 
   /** 上游目录不可用时的兜底清单（至少一个，保证 provider 可路由）。 */
@@ -160,7 +171,7 @@ export function createCodexGptAdapter(opts) {
 
     if (modelId === AUTO_MODEL_ID) {
       return {
-        provider: PROVIDER_ID,
+        provider: requestedProviderId(provider) || PROVIDER_ID,
         id: AUTO_MODEL_ID,
         name: '自动选择',
         context: { contextWindow: DEFAULT_CONTEXT_WINDOW },
@@ -188,7 +199,7 @@ export function createCodexGptAdapter(opts) {
     }
 
     return {
-      provider: PROVIDER_ID,
+      provider: requestedProviderId(provider) || PROVIDER_ID,
       id: modelId,
       name: found?.displayName || modelId,
       context: { contextWindow: found?.contextWindow || DEFAULT_CONTEXT_WINDOW },
@@ -971,10 +982,17 @@ export function normalizeModels(models) {
 }
 
 function assertProvider(provider) {
-  const providerId = typeof provider === 'string' ? provider : provider?.id
-  if (providerId && providerId !== PROVIDER_ID) {
+  const providerId = requestedProviderId(provider)
+  if (providerId && providerId !== PROVIDER_ID && !LEGACY_PROVIDER_IDS.includes(providerId)) {
     throw createCodedError(`不支持的 LLM provider: ${providerId}`, 'UNSUPPORTED_PROVIDER')
   }
+}
+
+/** 把 DSH 传进来的 provider（字符串或 {id}）读成路由 id；没传时给空串。 */
+function requestedProviderId(provider) {
+  if (typeof provider === 'string') return provider
+  if (provider && typeof provider.id === 'string') return provider.id
+  return ''
 }
 
 function throwIfAborted(signal) {

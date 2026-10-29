@@ -24,8 +24,10 @@ window.__ModuleLoader__.load({
     /** 没有模型目录时用的恒定订阅/取值，保证 hook 调用顺序稳定。 */
     const noopSubscribe = () => () => {}
     const emptyProviderValue = () => ''
-    /** 本插件 ChatGPT provider 的内部 id；其余 provider 一律视为「DeepSeek」。 */
-    const CHATGPT_PROVIDER_ID = 'chatgpt-codex'
+    /** 本插件 ChatGPT provider 的规范 id（与生态对齐，便于其它插件识别）。 */
+    const CHATGPT_PROVIDER_ID = 'openai-codex'
+    /** 旧版本注册过的路由 id：老会话里保存的模型选择仍是它，显示名要一样按 GPT 认。 */
+    const CHATGPT_PROVIDER_IDS = new Set([CHATGPT_PROVIDER_ID, 'chatgpt-codex'])
     /** 保险开关开启时，用来判断「其他 provider 提供的模型名看起来像 GPT」。 */
     const LOOKS_LIKE_GPT_RE = /^(?:gpt|o[0-9]|chatgpt)/i
 
@@ -306,7 +308,7 @@ window.__ModuleLoader__.load({
       //   默认：当前 provider 是本插件 ChatGPT → 显示 DeepSeek，其他 → 显示 ChatGPT
       //   保险开关 gptNameDetect 开启后：其他 provider 但模型 id 形如 gpt-*/o3-* 也按 GPT 识别 → 显示 DeepSeek
       const nameDetect = Boolean(state.global && state.global.gptNameDetect === true)
-      const isOwnChatGpt = provider === CHATGPT_PROVIDER_ID
+      const isOwnChatGpt = CHATGPT_PROVIDER_IDS.has(provider)
       const isOtherGptNamed = nameDetect && LOOKS_LIKE_GPT_RE.test(currentModelId || '')
       const label = isOwnChatGpt || isOtherGptNamed ? 'DeepSeek' : 'ChatGPT'
 

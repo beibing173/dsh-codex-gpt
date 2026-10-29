@@ -12,7 +12,8 @@
 
 ### 1. ChatGPT 作为 LLM provider（直接对话）
 
-- 模型选择器新增 **「ChatGPT」** provider（内部 id `chatgpt-codex`），选中后整个对话由 GPT 处理：完整上下文、流式输出、工具调用。
+- 模型选择器新增 **「ChatGPT」** provider（内部 id **`openai-codex`**，与生态对齐：`@dougen/dsh-deepseek-usage` 等按这个 id 识别 ChatGPT 订阅的插件可以直接认出来），选中后整个对话由 GPT 处理：完整上下文、流式输出、工具调用。
+- 旧版本注册过的 id `chatgpt-codex` 仍**同时注册**（分组名显示为「ChatGPT（旧 id）」），升级前保存过模型选择的老会话不会变成不可路由；把老会话的模型重选一次后就只走新 id 了。
 - 模型列表**实时**从账号可用模型拉取（`gpt-6.1-sol`、`gpt-6-astra`、`gpt-5.6-sol` …），不写死。
 - 支持**思考强度**：`Off / Low / High / Max`，默认 `High`，内部映射到 Codex 的 `reasoning.effort`（`Max → xhigh`，`Off → 不发送 reasoning`）。
 - 支持**图片输入**：贴图直接发给 GPT（经 `ctx.attachments.readImage` 读取并编码为 `input_image`）。
@@ -111,13 +112,13 @@ DSH 中通过 **插件管理** 以本地 bundle 方式安装：
 | `network.js` | 外网连通性检查 |
 | `client.js` | 浏览器侧：输入框授权胶囊、侧边栏用量卡片、设置页 |
 | `cordis.patch.yml` | 插入主机行 `id: dsh-codex-gpt` |
-| `test/` | `node --test` 单测（70 条，含安全回归） |
+| `test/` | `node --test` 单测（71 条，含安全回归） |
 
 数据流（方式 A）：
 
 ```
 DSH Agent Loop
-  └─ llm.prepareCall → chatgpt-codex 适配器
+  └─ llm.prepareCall → openai-codex 适配器
        └─ POST chatgpt.com/backend-api/codex/responses (SSE)
             └─ StreamChunk: text / reasoning / tool-call / usage / finish
 ```

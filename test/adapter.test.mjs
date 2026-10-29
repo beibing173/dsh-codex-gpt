@@ -6,8 +6,36 @@ import {
   convertMessages,
   parseSseFrame,
   normalizeModels,
+  LEGACY_PROVIDER_IDS,
   PROVIDER_ID,
 } from '../llm-adapter.js'
+
+test('provider id：规范 id 与旧别名都能路由', async () => {
+  assert.equal(PROVIDER_ID, 'openai-codex')
+  assert.deepEqual(LEGACY_PROVIDER_IDS, ['chatgpt-codex'])
+
+  const adapter = createCodexGptAdapter({
+    getCredential: async () => ({ accessToken: 'at' }),
+    fetchModels: async () => [{ slug: 'gpt-5.6-sol', displayName: 'GPT-5.6' }],
+    fallbackModel: 'gpt-5.6-sol',
+  })
+
+  // providerInfo 的 id 必须等于注册时的路由 id，否则 DSH 会拒绝这条路由。
+  assert.deepEqual(adapter.providerInfo(PROVIDER_ID), { id: 'openai-codex', name: 'ChatGPT' })
+  assert.deepEqual(adapter.providerInfo('chatgpt-codex'), { id: 'chatgpt-codex', name: 'ChatGPT（旧 id）' })
+
+  const canonical = await adapter.listModels(PROVIDER_ID)
+  assert.deepEqual(canonical.map((m) => m.provider), ['openai-codex'])
+
+  // 老会话保存的选择仍是 chatgpt-codex：必须照样列模型、照样解析，不能变成不可路由。
+  const legacy = await adapter.listModels('chatgpt-codex')
+  assert.deepEqual(legacy.map((m) => m.provider), ['chatgpt-codex'])
+  const resolved = await adapter.resolveModel('chatgpt-codex', 'gpt-5.6-sol')
+  assert.equal(resolved.provider, 'chatgpt-codex')
+  assert.equal(resolved.name, 'GPT-5.6')
+
+  await assert.rejects(() => adapter.listModels('deepseek-account'), /不支持的 LLM provider/)
+})
 
 test('buildRequestBody: 组装 Codex Responses 请求体', async () => {
   const body = await buildRequestBody({

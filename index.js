@@ -20,7 +20,7 @@ import { callCodexBackend, fetchCodexModels, fetchResetCredits, consumeResetCred
 import { getCodexUsage, __resetUsageCache } from './usage.js'
 import { checkConnectivity } from './network.js'
 import { createAuthStore, ensureAccessToken, beginLogin, cancelLogin, describeCredential } from './oauth.js'
-import { createCodexGptAdapter } from './llm-adapter.js'
+import { createCodexGptAdapter, LEGACY_PROVIDER_IDS, PROVIDER_ID } from './llm-adapter.js'
 
 export const name = 'dsh-codex-gpt'
 
@@ -582,7 +582,7 @@ export function apply(ctx, config) {
       const ids = ctx.llm
         .listProviders()
         .map((provider) => provider.id)
-        .filter((id) => id !== 'chatgpt-codex')
+        .filter((id) => id !== PROVIDER_ID && !LEGACY_PROVIDER_IDS.includes(id))
       if (ids.includes('deepseek-account')) return 'deepseek-account'
       if (ids.includes('deepseek-official')) return 'deepseek-official'
       return ids[0] || 'deepseek-official'
@@ -1028,11 +1028,13 @@ export function apply(ctx, config) {
 
   // ── 5. LLM 适配器：把 ChatGPT (Codex) 接进模型选择器 ───────────────────────
   // 选中该 provider 的模型后，对话直接由 GPT 处理（读上下文、流式回复、工具调用）。
+  // 规范 id 是 openai-codex（生态对齐）；同时保留旧 id chatgpt-codex 注册，
+  // 让升级前保存过模型选择的老会话依然可路由（否则它们会变成不可路由而发不出消息）。
   try {
     ctx.effect(() => {
       try {
         const handle = ctx.llm.registerAdapter(
-          ['chatgpt-codex'],
+          [PROVIDER_ID, ...LEGACY_PROVIDER_IDS],
           createCodexGptAdapter({
             getCredential: async (options) => {
               const credential = await ensureAccessToken(authStore, options || {})
@@ -1081,7 +1083,7 @@ export function apply(ctx, config) {
       try {
         const handle = ctx.llm.registerConfigurableProviders([
           {
-            provider: 'chatgpt-codex',
+            provider: PROVIDER_ID,
             displayName: 'ChatGPT',
             settingsNs: ENTRY_ID,
             settingsPath: ['models'],
@@ -1109,5 +1111,5 @@ export function apply(ctx, config) {
     warn('设置页 provider 目录注册失败', error)
   }
 
-  console.log(`[dsh-codex-gpt] activated (entry=${ENTRY_ID}, oauth, llm=chatgpt-codex, route=${ROUTE})`)
+  console.log(`[dsh-codex-gpt] activated (entry=${ENTRY_ID}, oauth, llm=${PROVIDER_ID}, route=${ROUTE})`)
 }

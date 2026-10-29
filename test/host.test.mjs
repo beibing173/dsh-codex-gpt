@@ -158,7 +158,7 @@ function createHarness(initialConfig = {}) {
       listProviders() {
         return [
           { id: 'deepseek-account', name: 'DeepSeek Account' },
-          { id: 'chatgpt-codex', name: 'ChatGPT' },
+          { id: 'openai-codex', name: 'ChatGPT' },
         ]
       },
       async listModels() {
