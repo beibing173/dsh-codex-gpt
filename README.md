@@ -123,7 +123,7 @@ DSH 中通过 **插件管理** 以本地 bundle 方式安装：
 | `network.js` | 外网连通性检查 |
 | `client.js` | 浏览器侧：输入框授权胶囊、侧边栏用量卡片、设置页 |
 | `cordis.patch.yml` | 插入主机行 `id: dsh-codex-gpt` |
-| `test/` | `node --test` 单测（91 条，含安全回归与 i18n 校验） |
+| `test/` | `node --test` 单测（90 条，含安全回归与客户端冒烟） |
 
 数据流（方式 A）：
 
@@ -164,7 +164,7 @@ node --test "test/codex.test.mjs" "test/usage.test.mjs" "test/host.test.mjs" "te
 - 未登录 / 未授权时不会发起任何 OpenAI 请求；
 - 状态路由只接受 `GET` / `POST`，其余方法一律 `405`（不能靠 `PUT/PATCH/DELETE` 绕过写令牌）；
 - 侧边栏「跟随当前模型」轮询走轻量端点 `?meta=1`（只回当前 provider/model 与默认 tab，不含邮箱、套餐、用量、写令牌，也不触发凭证写入）；
-- 用量卡与「用量卡默认显示」跟随 **DSH 界面语言**（注册 `locale` 词典，中/英自动切换；取不到 locale 服务时回退中文；设置页其余文案目前仍为中文）；
+- 界面文案固定中文，**不触碰宿主的 `locale` 服务**（少一个会弄坏界面的外部依赖）；卡片外面包了一层兜底组件，单个组件渲染出错也不会让整块卡片消失；
 - `credentials` 写入做了三件事：串行化（避免并发写触发多次模型目录刷新）、写前比较现值（值没变就不写）、登出时连同镜像 token 一起 `unset`；
 - 模型目录落盘缓存带**账号指纹**（`accountId` 的 SHA-256 前缀），换账号/登出会丢弃上一账号的目录；
 - DeepSeek 余额缓存键包含 **API Key 指纹 + base URL**，同一来源换了 Key 不会复用上一账号的余额；失败结果不会覆盖上次成功的金额。
