@@ -2,6 +2,11 @@
 
 > **中文名：双脑** —— DeepSeek 与 ChatGPT 两个脑子协作：日常由 DeepSeek 处理，难题交给 GPT 做独立分析或构建，侧边栏一块面板同时看着各家的额度与积分。
 
+| 名称 | 值 | 说明 |
+|---|---|---|
+| 插件显示名 | **双脑**（`package.json` 的 `displayName`） | 插件页/市场里看到的名字 |
+| 包名（下载名） | `dsh-codex-gpt`（`package.json` 的 `name`） | 安装、更新、依赖引用用的名字，**不要改**，改了 DSH 就认不出这是同一个插件 |
+
 把 **ChatGPT / OpenAI Codex** 接入 [DeepSeek Harness (DSH)](https://github.com/deepseek-ai) 的插件：既能在模型选择器里把 **ChatGPT 当作一个 LLM provider 直接对话**，也能让 DeepSeek 在会话内按需把难任务**转交给 GPT 做独立分析或代码构建**。
 
 全程使用 **ChatGPT 订阅额度**，走 OpenAI 官方 OAuth 登录，不需要填写 API Key，不产生 OpenAI API 计费。
