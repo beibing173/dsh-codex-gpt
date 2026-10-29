@@ -8,7 +8,15 @@
  * headers 需要 OAuth Bearer + originator: codex_cli_rs。
  */
 export const PROVIDER_ID = 'chatgpt-codex'
-const PROVIDER_NAME = 'ChatGPT (Codex)'
+const PROVIDER_NAME = 'ChatGPT'
+/** 思考强度档位（Codex 后端支持 low/medium/high/xhigh）。 */
+export const REASONING_EFFORTS = [
+  { id: 'low', name: '低', description: '更快，思考更少' },
+  { id: 'medium', name: '中', description: '平衡速度与深度（默认）' },
+  { id: 'high', name: '高', description: '更深入的推理' },
+  { id: 'xhigh', name: '极高', description: '最深入的推理，最慢' },
+]
+const DEFAULT_REASONING_EFFORT = 'medium'
 const RESPONSES_URL = 'https://chatgpt.com/backend-api/codex/responses'
 const DEFAULT_CONTEXT_WINDOW = 272000
 const DEFAULT_MAX_TOKENS = 64000
@@ -79,6 +87,7 @@ export function createCodexGptAdapter(opts) {
       name: found?.displayName || modelId,
       context: { contextWindow: found?.contextWindow || DEFAULT_CONTEXT_WINDOW },
       defaultMaxTokens: DEFAULT_MAX_TOKENS,
+      reasoning: { efforts: REASONING_EFFORTS.map((effort) => ({ ...effort })), defaultEffort: DEFAULT_REASONING_EFFORT },
       inputModalities: ['text'],
     }
   }

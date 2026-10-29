@@ -71,7 +71,7 @@ test('adapter: providerInfo / listModels / resolveModel', async () => {
     getCredential: async () => ({ accessToken: 'at', accountId: 'acc' }),
     fetchModels: async () => [{ slug: 'gpt-5.6-sol', displayName: 'GPT-5.6 Sol', contextWindow: 272000 }],
   })
-  assert.deepEqual(adapter.providerInfo(), { id: PROVIDER_ID, name: 'ChatGPT (Codex)' })
+  assert.deepEqual(adapter.providerInfo(), { id: PROVIDER_ID, name: 'ChatGPT' })
   const models = await adapter.listModels(PROVIDER_ID)
   assert.equal(models.length, 1)
   assert.equal(models[0].provider, PROVIDER_ID)
@@ -79,6 +79,9 @@ test('adapter: providerInfo / listModels / resolveModel', async () => {
   const resolved = await adapter.resolveModel(PROVIDER_ID, 'gpt-5.6-sol')
   assert.equal(resolved.context.contextWindow, 272000)
   assert.equal(resolved.defaultMaxTokens, 64000)
+  assert.ok(Array.isArray(resolved.reasoning.efforts))
+  assert.equal(resolved.reasoning.defaultEffort, 'medium')
+  assert.ok(resolved.reasoning.efforts.some((effort) => effort.id === 'high'))
 })
 
 test('adapter: stream 把 SSE 转成 DSH StreamChunk', async (t) => {

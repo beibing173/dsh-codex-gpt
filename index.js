@@ -299,7 +299,7 @@ export function apply(ctx, config) {
   /** 模型列表缓存（OAuth 登录后从 OpenAI 拉取）。 */
   let modelsCache = { at: 0, models: [], error: '' }
   /** LLM 适配器注册状态（诊断用，展示在状态路由里）。 */
-  let llmAdapterStatus = { registered: false, error: '尚未注册' }
+  let llmAdapterStatus = { registered: false, error: '尚未注册', directory: { registered: false, error: '尚未注册' } }
 
   const getModels = async (credential, force = false) => {
     if (!credential) return { models: [], error: '' }
@@ -750,6 +750,40 @@ export function apply(ctx, config) {
     }, 'dsh-codex-gpt: ChatGPT LLM 适配器')
   } catch (error) {
     warn('LLM 适配器注册失败（模型列表里不会出现 ChatGPT）', error)
+  }
+
+  // ── 6. 设置页 provider 目录：让「设置 → 模型」里出现 ChatGPT ──────────────
+  try {
+    ctx.effect(() => {
+      try {
+        const handle = ctx.llm.registerConfigurableProviders([
+          {
+            provider: 'chatgpt-codex',
+            displayName: 'ChatGPT',
+            settingsNs: ENTRY_ID,
+            settingsPath: ['models'],
+            declared: true,
+            nativeAuth: { env: [], oauth: true },
+          },
+        ])
+        llmAdapterStatus.directory = { registered: true, error: '' }
+        return () => {
+          try {
+            handle()
+          } catch {
+            // 已释放
+          }
+        }
+      } catch (error) {
+        llmAdapterStatus.directory = {
+          registered: false,
+          error: error instanceof Error ? error.message : String(error),
+        }
+        throw error
+      }
+    }, 'dsh-codex-gpt: ChatGPT 设置目录')
+  } catch (error) {
+    warn('设置页 provider 目录注册失败', error)
   }
 
   console.log(`[dsh-codex-gpt] activated (entry=${ENTRY_ID}, oauth, llm=chatgpt-codex, route=${ROUTE})`)
