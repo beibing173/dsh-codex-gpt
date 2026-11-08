@@ -15,6 +15,8 @@ import { createServer } from 'node:http'
 import { readFileSync, writeFileSync, mkdirSync, renameSync, rmSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { homedir } from 'node:os'
+// 日期合并规则与用量层保持同一份实现：续费后两边必须给出同一个到期日。
+import { earlierDate, laterDate } from './usage.js'
 
 export const ISSUER = 'https://auth.openai.com'
 /** Codex CLI 的公开 OAuth client id（官方公开值，服务端按 originator 白名单校验）。 */
@@ -54,21 +56,17 @@ export function claimsFromToken(token) {
   if (!payload) return {}
   const auth = payload['https://api.openai.com/auth']
   const authValue = auth && typeof auth === 'object' ? auth : {}
+  // 缺字段时返回空串而不是 undefined：`{...a, ...b}` 里 undefined 一样会覆盖，
+  // 空串在下面统一的取值处（|| 兜底）才不会被误当成有效值。
+  const pick = (value) => (typeof value === 'string' && value ? value : '')
   return {
-    accountId:
-      typeof authValue.chatgpt_account_id === 'string' ? authValue.chatgpt_account_id : undefined,
-    userId: typeof authValue.chatgpt_user_id === 'string' ? authValue.chatgpt_user_id : undefined,
-    plan: typeof authValue.chatgpt_plan_type === 'string' ? authValue.chatgpt_plan_type : undefined,
-    activeStart:
-      typeof authValue.chatgpt_subscription_active_start === 'string'
-        ? authValue.chatgpt_subscription_active_start
-        : undefined,
-    activeUntil:
-      typeof authValue.chatgpt_subscription_active_until === 'string'
-        ? authValue.chatgpt_subscription_active_until
-        : undefined,
-    email: typeof payload.email === 'string' ? payload.email : undefined,
-    name: typeof payload.name === 'string' ? payload.name : undefined,
+    accountId: pick(authValue.chatgpt_account_id),
+    userId: pick(authValue.chatgpt_user_id),
+    plan: pick(authValue.chatgpt_plan_type),
+    activeStart: pick(authValue.chatgpt_subscription_active_start),
+    activeUntil: pick(authValue.chatgpt_subscription_active_until),
+    email: pick(payload.email),
+    name: pick(payload.name),
   }
 }
 
@@ -137,7 +135,13 @@ export function createAuthStore({ env = {}, homeDir = () => homedir() } = {}) {
   return { path: filePath, read, save, clear }
 }
 
-/** 把一次 token 响应整理成落盘记录（保留已有账号信息）。 */
+/**
+ * 把一次 token 响应整理成落盘记录（保留已有账号信息）。
+ *
+ * 订阅日期一律按「较晚值 / 较早值」合并，而不是直接覆盖：
+ * 服务端刷新时**不保证**重新下发带新日期的 id_token，而旧 id_token 里的
+ * 到期日永远是登录那一刻的快照。谁新就用谁，续费后不会固化成老日期。
+ */
 export function buildAuthRecord(tokens, previous) {
   const idClaims = claimsFromToken(tokens.id_token)
   const atClaims = claimsFromToken(tokens.access_token)
@@ -153,17 +157,24 @@ export function buildAuthRecord(tokens, previous) {
     email: claims.email || previous?.email,
     name: claims.name || previous?.name,
     plan: claims.plan || previous?.plan,
-    active_start: claims.activeStart || previous?.active_start,
-    active_until: claims.activeUntil || previous?.active_until,
+    active_start: earlierDate(claims.activeStart, previous?.active_start),
+    active_until: laterDate(claims.activeUntil, previous?.active_until),
     last_refresh: new Date().toISOString(),
   }
 }
 
-/** 从落盘记录得到调用所需的凭证描述。 */
+/**
+ * 从落盘记录得到调用所需的凭证描述。
+ *
+ * 订阅字段同样取「token claim 与落盘快照的较晚/较早值」：
+ * 只信 token 会在服务端没重签 id_token 时一直显示旧日期，
+ * 只信记录又会让重新登录拿到的新日期被旧快照压住。
+ */
 export function describeCredential(record) {
   if (!record || !record.tokens || typeof record.tokens.access_token !== 'string') return undefined
   const idClaims = claimsFromToken(record.tokens.id_token)
   const atClaims = claimsFromToken(record.tokens.access_token)
+  // 两个 token 之间：账号信息以 id_token 为准，订阅日期交给后面的比较兜底。
   const claims = { ...atClaims, ...idClaims }
   return {
     accessToken: record.tokens.access_token,
@@ -172,9 +183,9 @@ export function describeCredential(record) {
     accountId: record.tokens.account_id || claims.accountId,
     email: record.email || claims.email,
     name: record.name || claims.name,
-    plan: record.plan || claims.plan,
-    activeStart: record.active_start || claims.activeStart,
-    activeUntil: record.active_until || claims.activeUntil,
+    plan: claims.plan || record.plan,
+    activeStart: earlierDate(claims.activeStart, record.active_start),
+    activeUntil: laterDate(claims.activeUntil, record.active_until),
     expiresAt: tokenExpiresAt(record.tokens.access_token),
   }
 }

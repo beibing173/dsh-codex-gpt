@@ -386,16 +386,42 @@ window.__ModuleLoader__.load({
       )
     }
 
-    function formatDate(value) {
-      if (typeof value !== 'string' || !value) return ''
-      const match = value.match(/^(\d{4})-(\d{2})-(\d{2})/)
-      if (match) return `${match[1]}-${match[2]}-${match[3]}`
-      const number = Number(value)
-      if (Number.isFinite(number) && number > 0) {
-        const date = new Date(number < 1e12 ? number * 1000 : number)
-        if (!Number.isNaN(date.getTime())) return date.toISOString().slice(0, 10)
+    /**
+     * 订阅到期日 → 「YYYY-MM-DD」（按**本地时区**，与用户看到的日历一致）。
+     *
+     * 两处旧写法都有问题：
+     *   1. `new Date().toISOString().slice(0, 10)` 取的是 UTC 的「今天」，东八区
+     *      0 点到 8 点之间会差一天，导致「刚续费」被判成「已结束」；
+     *   2. 原来只抓字符串前缀、再用字符串比较日期，遇到非 ISO 或者跨时区就判错。
+     * 这里统一成「解析成时间戳 → 用本地年月日格式化」。
+     */
+    function localDateKey(value) {
+      const date = parseDateValue(value)
+      if (!date) return ''
+      const pad = (input) => String(input).padStart(2, '0')
+      return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`
+    }
+
+    /** 把 ISO 字符串 / unix 秒 / 毫秒解析成 Date；失败返回 null。 */
+    function parseDateValue(value) {
+      if (typeof value === 'number') {
+        const date = new Date(value < 1e12 ? value * 1000 : value)
+        return Number.isNaN(date.getTime()) ? null : date
       }
-      return ''
+      if (typeof value !== 'string' || !value) return null
+      // 纯数字字符串也可能是 unix 时间戳。
+      if (/^\d+$/.test(value)) return parseDateValue(Number(value))
+      const date = new Date(value)
+      return Number.isNaN(date.getTime()) ? null : date
+    }
+
+    function formatDate(value) {
+      return localDateKey(value)
+    }
+
+    /** 本地「今天」的 YYYY-MM-DD，用来和到期日同口径比较。 */
+    function localToday() {
+      return localDateKey(Date.now())
     }
 
     /** unix 秒 → 本地「MM-DD HH:mm」，用于窗口重置时间提示。 */
@@ -1116,7 +1142,7 @@ window.__ModuleLoader__.load({
       const planText = (usage && usage.planLabel) || ''
       const subscription = (usage && usage.subscription) || {}
       const untilDate = formatDate(subscription.activeUntil)
-      const today = new Date().toISOString().slice(0, 10)
+      const today = localToday()
       const untilText = untilDate
         ? untilDate >= today
           ? t('subUntil', untilDate)
@@ -1722,7 +1748,7 @@ window.__ModuleLoader__.load({
 
       const loggedIn = auth.loggedIn === true
       const untilDate = formatDate(auth.activeUntil)
-      const today = new Date().toISOString().slice(0, 10)
+      const today = localToday()
       const untilText = untilDate
         ? untilDate >= today
           ? t('subUntil', untilDate)
