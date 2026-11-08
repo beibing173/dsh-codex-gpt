@@ -320,6 +320,8 @@ export function createCodexGptAdapter(opts) {
     let emittedToolCall = false
     let finished = false
     let lastUsageSignature
+    const completedOutput = new Map()
+    const reasoningAliases = new Map()
 
     const allocateBlock = (blockType) => ({
       index: nextBlockIndex++,
@@ -336,6 +338,21 @@ export function createCodexGptAdapter(opts) {
         return { type: 'block-start', index: textBlock.index, blockType: 'text' }
       }
       return undefined
+    }
+
+    // Resolve summaries by output item, not by whichever reasoning block was last active.
+    const selectReasoningBlock = (event, item) => {
+      const aliases = [item?.id, event?.item_id, event?.output_index]
+        .filter(value => value !== undefined && value !== null).map(String)
+      let block = aliases.map(alias => reasoningAliases.get(alias)).find(Boolean)
+      if (!block) {
+        block = aliases.length === 0 && reasoningBlock && !reasoningBlock.ended
+          ? reasoningBlock : allocateBlock('reasoning')
+        block.parts = new Map()
+      }
+      for (const alias of aliases) reasoningAliases.set(alias, block)
+      reasoningBlock = block
+      return block
     }
 
     const startReasoningBlock = () => {
@@ -440,7 +457,7 @@ export function createCodexGptAdapter(opts) {
     const emitUsage = (source) => {
       const usage = normalizeUsage(source)
       if (!usage) return undefined
-      const signature = `${usage.inputTokens}:${usage.outputTokens}:${usage.totalTokens ?? ''}`
+      const signature = JSON.stringify(usage)
       if (signature === lastUsageSignature) return undefined
       lastUsageSignature = signature
       return { type: 'usage', usage }
@@ -482,6 +499,10 @@ export function createCodexGptAdapter(opts) {
                 ? event.delta.text
                 : ''
           if (!delta) continue
+          const block = selectReasoningBlock(event)
+          if (block.ended) continue
+          const part = event.summary_index ?? event.content_index ?? 0
+          block.parts.set(part, (block.parts.get(part) || '') + delta)
           const start = startReasoningBlock()
           if (start) yield start
           reasoningBlock.text += delta
@@ -520,6 +541,23 @@ export function createCodexGptAdapter(opts) {
 
         if (type === 'response.output_item.done') {
           const item = event.item
+          if (item && Number.isInteger(event.output_index)) completedOutput.set(event.output_index, item)
+          if (item?.type === 'reasoning') {
+            const block = selectReasoningBlock(event, item)
+            if (block.ended) continue
+            const text = Array.isArray(item.summary) ? item.summary.filter(p => p?.type === 'summary_text').map(p => p.text).join('') : block.text
+            if (text && !block.started) {
+              const start = startReasoningBlock()
+              if (start) yield start
+              reasoningBlock.text = text
+              yield { type: 'reasoning-delta', index: reasoningBlock.index, text }
+            }
+            // The completed item is authoritative, including all summary parts.
+            block.text = text
+            const end = closeReasoningBlock()
+            if (end) yield end
+            continue
+          }
           if (item?.type === 'function_call') {
             const block = findOrCreateToolBlock(event, item)
             for (const chunk of closeToolBlock(block, item)) yield chunk
@@ -568,14 +606,20 @@ export function createCodexGptAdapter(opts) {
               : typeof event.summary === 'string'
                 ? event.summary
                 : ''
-          if (finalText && !reasoningBlock?.started) {
+          const block = selectReasoningBlock(event)
+          if (block.ended) continue
+          const part = event.summary_index ?? event.content_index ?? 0
+          const previous = block.parts.get(part) || ''
+          if (finalText) block.parts.set(part, finalText)
+          if (finalText && !block.started) {
             const start = startReasoningBlock()
             if (start) yield start
-            reasoningBlock.text = finalText
-            yield { type: 'reasoning-delta', index: reasoningBlock.index, text: finalText }
           }
-          const end = closeReasoningBlock()
-          if (end) yield end
+          if (finalText.startsWith(previous) && finalText.length > previous.length) {
+            yield { type: 'reasoning-delta', index: block.index, text: finalText.slice(previous.length) }
+          }
+          block.text = [...block.parts.entries()].sort((a, b) => a[0] - b[0]).map(([, text]) => text).join('')
+          // A summary part is not a complete reasoning item. Close on output_item.done.
           continue
         }
 
@@ -598,7 +642,7 @@ export function createCodexGptAdapter(opts) {
           yield {
             type: 'finish',
             reason: { kind: emittedToolCall ? 'tool-calls' : 'stop' },
-            replayState: { response: event.response },
+            replayState: { response: { ...event.response, output: Array.isArray(event.response?.output) && event.response.output.length ? event.response.output : [...completedOutput.entries()].sort((a,b) => a[0]-b[0]).map(([,item]) => item) } },
           }
           finished = true
           return
@@ -706,6 +750,11 @@ export function createCodexGptAdapter(opts) {
       'Content-Type': 'application/json',
     }
     if (credential.accountId) headers['chatgpt-account-id'] = credential.accountId
+    // Stable session affinity, matching current Codex CLI. Never use a per-request UUID.
+    if (options?.sessionId) {
+      headers['session-id'] = String(options.sessionId)
+      headers['thread-id'] = String(options.sessionId)
+    }
     const model = await pickModelId(options, credential)
     return fetch(RESPONSES_URL, {
       method: 'POST',
@@ -752,11 +801,12 @@ export function estimateRequestSize(options) {
 
 /** 组装 Codex Responses 请求体（异步：需要读取图片附件）。 */
 export async function buildRequestBody(options, readImage) {
-  const { instructions, input } = await convertMessages(options?.messages, options?.system, readImage)
   const model = typeof options?.model === 'string' ? options.model : options?.model?.id
+  const { instructions, input } = await convertMessages(options?.messages, options?.system, readImage, model)
   if (!model) throw createCodedError('未指定 Codex 模型', 'MISSING_MODEL')
 
-  const body = { model, instructions, input, stream: true, store: false }
+  const body = { model, instructions, input, stream: true, store: false, include: ['reasoning.encrypted_content'] }
+  if (options?.sessionId) body.prompt_cache_key = String(options.sessionId)
   if (Array.isArray(options?.tools) && options.tools.length > 0) {
     body.tools = options.tools
       .filter((tool) => tool && typeof tool.name === 'string')
@@ -780,18 +830,26 @@ export async function buildRequestBody(options, readImage) {
 }
 
 /** 把 DSH 消息转换成 Responses input + instructions（图片需 readImage 读取附件字节）。 */
-export async function convertMessages(messages, explicitSystem, readImage) {
+export async function convertMessages(messages, explicitSystem, readImage, model) {
   const instructionParts = []
   appendInstruction(instructionParts, explicitSystem)
   const input = []
+  let historyStarted = false
 
   for (const message of Array.isArray(messages) ? messages : []) {
     if (!message || typeof message.role !== 'string') continue
 
     if (message.role === 'system' || message.role === 'developer') {
-      appendInstruction(instructionParts, message.content)
+      if (!historyStarted) appendInstruction(instructionParts, message.content)
+      else {
+        // Late instructions stay at their original position; hoisting them changes the entire prefix.
+        const parts = []
+        appendInstruction(parts, message.content)
+        if (parts.length) input.push({ role: 'developer', content: [{ type: 'input_text', text: parts.join('\n\n') }] })
+      }
       continue
     }
+    historyStarted = true
 
     if (message.role === 'user') {
       const parts = []
@@ -819,23 +877,18 @@ export async function convertMessages(messages, explicitSystem, readImage) {
     }
 
     if (message.role === 'assistant') {
-      const textParts = []
+      const native = nativeReplayOutput(message, model)
+      if (native) {
+        input.push(...native)
+        continue
+      }
+      // Foreign/edited histories use durable visible content, preserving text/tool order.
       for (const block of normalizeContent(message.content)) {
         if (block?.type === 'text' && typeof block.text === 'string') {
-          textParts.push(block.text)
-          continue
+          input.push({ role: 'assistant', content: [{ type: 'output_text', text: block.text }] })
+        } else if (block?.type === 'tool-call') {
+          input.push({ type: 'function_call', call_id: String(block.id || ''), name: String(block.name || ''), arguments: stringifyToolArguments(block.arguments) })
         }
-        if (block?.type === 'tool-call') {
-          input.push({
-            type: 'function_call',
-            call_id: String(block.id || ''),
-            name: String(block.name || ''),
-            arguments: stringifyToolArguments(block.arguments),
-          })
-        }
-      }
-      if (textParts.length > 0) {
-        input.push({ role: 'assistant', content: [{ type: 'output_text', text: textParts.join('') }] })
       }
       continue
     }
@@ -852,6 +905,38 @@ export async function convertMessages(messages, explicitSystem, readImage) {
   }
 
   return { instructions: instructionParts.join('\n\n'), input }
+}
+
+// Reuse native IDs, message phases and encrypted reasoning only for unchanged, same-model history.
+// This is durable replay metadata, not a process-global transcript cache.
+function nativeReplayOutput(message, model) {
+  const source = message.source
+  if (!source || ![PROVIDER_ID, ...LEGACY_PROVIDER_IDS].includes(source.provider) || !model || source.model !== model) return undefined
+  const response = source.replayState?.response
+  if (response?.status !== 'completed' || !Array.isArray(response.output) || !response.output.length) return undefined
+  const projected = []
+  for (const item of response.output) {
+    if (!item || typeof item !== 'object') return undefined
+    if (item.type === 'reasoning') {
+      if (typeof item.encrypted_content !== 'string' || !item.encrypted_content) return undefined
+      if (!Array.isArray(item.summary) || item.summary.some(part => part?.type !== 'summary_text' || typeof part.text !== 'string')) return undefined
+      const text = item.summary.map(part => part.text).join('')
+      if (text) projected.push({ type: 'reasoning', text })
+    } else if (item.type === 'message' && item.role === 'assistant' && Array.isArray(item.content)) {
+      if (item.content.some(part => part?.type !== 'output_text' || typeof part.text !== 'string')) return undefined
+      const text = item.content.map(part => part.text).join('')
+      if (text) projected.push({ type: 'text', text })
+    } else if (item.type === 'function_call' && typeof item.call_id === 'string' && typeof item.name === 'string' && typeof item.arguments === 'string') {
+      projected.push({ type: 'tool-call', id: item.call_id, name: item.name, arguments: item.arguments })
+    } else return undefined
+  }
+  const blocks = normalizeContent(message.content)
+  if (blocks.some(block => !['text', 'reasoning', 'tool-call'].includes(block?.type))) return undefined
+  const signature = items => JSON.stringify(items.map(block => block.type === 'tool-call'
+    ? ['tool', block.id, block.name, stringifyToolArguments(block.arguments)]
+    : [block.type, block.text]))
+  if (signature(blocks) !== signature(projected)) return undefined
+  return response.output
 }
 
 function appendInstruction(target, value) {
@@ -926,20 +1011,54 @@ function normalizeUsage(source) {
   const inputTokens = firstFiniteNumber(source.input_tokens, source.inputTokens, source.prompt_tokens)
   const outputTokens = firstFiniteNumber(source.output_tokens, source.outputTokens, source.completion_tokens)
   const totalTokens = firstFiniteNumber(source.total_tokens, source.totalTokens)
+  // Responses reports cache reads/writes inside the inclusive input token count.
+  const details = source.input_tokens_details ?? source.inputTokensDetails ?? {}
+  const outputDetails = source.output_tokens_details ?? source.outputTokensDetails ?? {}
+  let cacheReadTokens = firstFiniteNumber(
+    details.cached_tokens,
+    details.cachedTokens,
+    source.cached_tokens,
+    source.cache_read_input_tokens,
+  )
+  let cacheWriteTokens = firstFiniteNumber(
+    details.cache_write_tokens,
+    details.cacheWriteTokens,
+    source.cache_write_tokens,
+    source.cache_creation_input_tokens,
+  )
+  let reasoningTokens = firstFiniteNumber(
+    outputDetails.reasoning_tokens,
+    outputDetails.reasoningTokens,
+    source.reasoning_tokens,
+  )
   if (inputTokens === undefined && outputTokens === undefined && totalTokens === undefined) return undefined
-  const normalizedInput = inputTokens ?? 0
+  // OpenAI input_tokens includes cached input; DSH inputTokens excludes it.
   const normalizedOutput = outputTokens ?? 0
+  const promptTotal = inputTokens ?? (totalTokens !== undefined && totalTokens >= normalizedOutput ? totalTokens - normalizedOutput : 0)
+  const exactTotal = promptTotal + normalizedOutput
+  if (!Number.isSafeInteger(exactTotal) || (totalTokens !== undefined && totalTokens !== exactTotal)) return undefined
+  // Invalid optional details must not fabricate hits or invalidate otherwise usable totals.
+  if ((cacheReadTokens ?? 0) + (cacheWriteTokens ?? 0) > promptTotal) {
+    cacheReadTokens = undefined
+    cacheWriteTokens = undefined
+  }
+  if (reasoningTokens !== undefined && reasoningTokens > normalizedOutput) reasoningTokens = undefined
+  const normalizedInput = promptTotal - (cacheReadTokens ?? 0) - (cacheWriteTokens ?? 0)
   return {
     inputTokens: normalizedInput,
     outputTokens: normalizedOutput,
-    totalTokens: totalTokens ?? normalizedInput + normalizedOutput,
+    totalTokens: exactTotal,
+    ...(cacheReadTokens === undefined ? {} : { cacheReadTokens }),
+    ...(cacheWriteTokens === undefined ? {} : { cacheWriteTokens }),
+    ...(reasoningTokens === undefined ? {} : { reasoningTokens }),
   }
 }
 
 function firstFiniteNumber(...values) {
   for (const value of values) {
+    if (typeof value !== 'number' && (typeof value !== 'string' || !/^\d+$/.test(value.trim()))) continue
     const number = Number(value)
-    if (Number.isFinite(number) && number >= 0) return number
+    if (Number.isSafeInteger(number) && number >= 0) return number
   }
   return undefined
 }
