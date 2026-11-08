@@ -186,3 +186,77 @@ test('看板开关是可点击按钮 + 独立保存按钮（保存后才写入�
   assert.ok(source.includes('uiControls.setCardVisible'), '保存后应能立即切换卡片显隐')
   assert.ok(source.includes('uiControls.setToggleVisible'), '保存后应能立即切换胶囊显隐')
 })
+
+// ── 订阅到期日：日期必须按本地时区格式化，且不能用 UTC 的「今天」比较 ──────
+
+/**
+ * 取出 client.js 里的日期工具函数，在目标时区下单独跑。
+ *
+ * 不能靠运行时修改 `process.env.TZ`：Linux 上的 V8 不感知运行时的时区变更，
+ * CI（UTC）会把断言跑成 UTC 结果而不是东八区结果。这里改为给被测函数注入
+ * 一个「本地年月日按目标时区解析」的 Date 包装，测试结果与宿主机时区无关。
+ */
+function loadDateHelpers(timeZone) {
+  const start = source.indexOf('function localDateKey(value)')
+  const end = source.indexOf('/** unix 秒 → 本地「MM-DD HH:mm」')
+  assert.ok(start > 0 && end > start, '未找到日期工具函数')
+  const body = source.slice(start, end)
+  const RealDate = Date
+  const formatter = new Intl.DateTimeFormat('en-CA', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  })
+  const zoned = (date) => {
+    // Invalid Date（解析失败的字符串）没有本地年月日可取，原样返回让调用方判空。
+    if (Number.isNaN(date.getTime())) return date
+    const parts = Object.fromEntries(formatter.formatToParts(date).map(({ type, value }) => [type, value]))
+    date.getFullYear = () => Number(parts.year)
+    date.getMonth = () => Number(parts.month) - 1
+    date.getDate = () => Number(parts.day)
+    return date
+  }
+  const ZonedDate = function (...args) {
+    return zoned(new RealDate(...args))
+  }
+  ZonedDate.now = RealDate.now
+  ZonedDate.parse = RealDate.parse
+  ZonedDate.UTC = RealDate.UTC
+  const factory = new Function('Date', `${body}; return { localDateKey, formatDate, localToday, parseDateValue }`)
+  return factory(ZonedDate)
+}
+
+test('formatDate: 按本地日期而非 UTC 日期格式化（东八区零点后不会差一天）', () => {
+  const helpers = loadDateHelpers('Asia/Shanghai')
+  // UTC 2026-11-30T20:00 → 北京 2026-12-01 04:00，本地日历应是 12-01。
+  // 旧实现直接抓字符串前缀，会输出 2026-11-30。
+  assert.equal(helpers.formatDate('2026-11-30T20:00:00+00:00'), '2026-12-01')
+  // 纯日期的 ISO 串不受影响。
+  assert.equal(helpers.formatDate('2026-11-03'), '2026-11-03')
+  // unix 秒 / 毫秒都支持，且两者结果一致。
+  assert.equal(helpers.formatDate(1793000000), helpers.localDateKey(1793000000))
+  assert.equal(helpers.formatDate(1793000000), helpers.localDateKey(1793000000 * 1000))
+  assert.equal(helpers.formatDate(''), '')
+  assert.equal(helpers.formatDate('not-a-date'), '')
+})
+
+test('localToday: 与到期日同口径（本地），不会在 UTC 跨天时判成已结束', () => {
+  const helpers = loadDateHelpers('Asia/Shanghai')
+  const today = helpers.localToday()
+  assert.match(today, /^\d{4}-\d{2}-\d{2}$/)
+  // 今天的字符串必须 >= 自身，且不出现 UTC 偏差导致的空串。
+  assert.ok(today >= today)
+  // 直接和 formatDate(now) 对齐：两者必须是同一套口径。
+  assert.equal(today, helpers.formatDate(Date.now()))
+})
+
+test('到期日比较：当天到期算有效，前一天算已结束（边界不靠字符串前缀）', () => {
+  const helpers = loadDateHelpers('Asia/Shanghai')
+  const today = helpers.localToday()
+  // 今天 23:59:59 北京时间仍在有效期内。
+  const endOfToday = helpers.formatDate(new Date(`${today}T23:59:59+08:00`).getTime())
+  assert.equal(endOfToday >= today, true)
+  const yesterday = helpers.formatDate(new Date(`${today}T00:00:00+08:00`).getTime() - 86400_000)
+  assert.equal(yesterday >= today, false)
+})

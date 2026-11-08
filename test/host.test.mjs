@@ -360,6 +360,35 @@ test('已登录：OAuth 凭证被识别，返回邮箱与订阅计划', async ()
   assert.doesNotMatch(JSON.stringify(json), /access_token|refresh_token|id_token/)
 })
 
+test('订阅续费后：快照的到期日跟着新凭证更新（不会固化成旧日期）', async () => {
+  // 模拟「网页上续费了，然后重新登录过」：token 与落盘记录都带新日期。
+  const renewed = makeAuthRecord()
+  const claims = {
+    chatgpt_plan_type: 'plus',
+    chatgpt_account_id: 'acc-1',
+    chatgpt_subscription_active_start: '2026-09-03T06:54:41+00:00',
+    chatgpt_subscription_active_until: '2026-12-03T06:54:41+00:00',
+  }
+  renewed.tokens.access_token = makeJwt({ exp: future(), 'https://api.openai.com/auth': claims })
+  renewed.tokens.id_token = makeJwt({ exp: future(), 'https://api.openai.com/auth': claims })
+  renewed.active_start = '2026-09-03T06:54:41+00:00'
+  renewed.active_until = '2026-12-03T06:54:41+00:00'
+  writeAuth(renewed)
+  const harness = createHarness()
+  const { json } = await callApi(harness, { url: '/dsh-codex-api?auth=1' })
+  assert.equal(json.auth.activeUntil, '2026-12-03T06:54:41+00:00')
+})
+
+test('订阅续费但 token 未重签：快照仍给出续费后的新日期（取较晚值）', async () => {
+  // 服务端只换了 access_token，id_token 里的日期还是续费前的旧快照。
+  const record = makeAuthRecord()
+  record.active_until = '2026-12-03T06:54:41+00:00'
+  writeAuth(record)
+  const harness = createHarness()
+  const { json } = await callApi(harness, { url: '/dsh-codex-api?auth=1' })
+  assert.equal(json.auth.activeUntil, '2026-12-03T06:54:41+00:00')
+})
+
 test('模型列表从 OpenAI codex/models 实时拉取', async (t) => {
   const original = globalThis.fetch
   t.after(() => {

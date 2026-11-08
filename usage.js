@@ -63,6 +63,8 @@ export function decodeJwtPayload(token) {
 
 /**
  * 从 id_token / access_token 读取订阅信息。
+ * 读不到任何字段时返回 undefined（而不是一个空壳对象）：
+ * 层层的 `a || b` 兜底里，空壳对象是真值，会把后面的来源整个吃掉。
  * @param {string} token JWT。
  * @returns {{ plan?: string, activeStart?: string, activeUntil?: string } | undefined}
  */
@@ -72,11 +74,77 @@ export function subscriptionFromToken(token) {
   const auth = payload['https://api.openai.com/auth']
   if (!auth || typeof auth !== 'object') return undefined
   const read = (key) => (typeof auth[key] === 'string' && auth[key] ? auth[key] : undefined)
-  return {
-    plan: read('chatgpt_plan_type'),
-    activeStart: read('chatgpt_subscription_active_start'),
-    activeUntil: read('chatgpt_subscription_active_until'),
+  const plan = read('chatgpt_plan_type')
+  const activeStart = read('chatgpt_subscription_active_start')
+  const activeUntil = read('chatgpt_subscription_active_until')
+  if (!plan && !activeStart && !activeUntil) return undefined
+  return { plan, activeStart, activeUntil }
+}
+
+/**
+ * 在多个 token 之间挑出订阅信息。
+ *
+ * 为什么不能简单 `id_token || access_token`：
+ *   - id_token 只在**登录那一刻**签发，access_token 每次刷新都会换新的；
+ *   - 用户在网页上续费 / 升级后，新日期只会出现在随后签发的 token 里；
+ *   - 于是「先读 id_token」等于永远优先用最旧的那份快照，
+ *     续费完不重新登录就永远看不到新日期——这正是「到期日不同步」。
+ * 这里按过期时间从新到旧挑：新的 token 优先，**已过期**的 token 排到最后，
+ * 解析不到 exp 的排倒数第二（无法证明它是旧的，但不该盖过新鲜的）。
+ * @param {Array<string | undefined>} tokens 候选 JWT。
+ * @param {number} [now] 当前毫秒时间戳（测试注入）。
+ */
+export function subscriptionFromTokens(tokens, now = Date.now()) {
+  const candidates = []
+  for (const token of tokens) {
+    const claims = subscriptionFromToken(token)
+    if (!claims) continue
+    // 已过期的 token 里日期不可信：可能早于用户最近一次续费。
+    const expiresAt = tokenExpiresAt(token)
+    if (expiresAt && expiresAt <= now) continue
+    candidates.push({ claims, expiresAt })
   }
+  if (candidates.length === 0) return {}
+  candidates.sort((a, b) => (b.expiresAt || 0) - (a.expiresAt || 0))
+  return {
+    plan: candidates.find((item) => item.claims.plan)?.claims.plan,
+    activeStart: candidates.find((item) => item.claims.activeStart)?.claims.activeStart,
+    activeUntil: candidates.find((item) => item.claims.activeUntil)?.claims.activeUntil,
+  }
+}
+
+/** 把日期字符串 / 时间戳解析成毫秒；解析不到返回 NaN。 */
+export function parseDateMs(value) {
+  if (typeof value === 'number') return Number.isFinite(value) ? (value < 1e12 ? value * 1000 : value) : NaN
+  if (typeof value !== 'string' || !value) return NaN
+  if (/^\d+$/.test(value)) return parseDateMs(Number(value))
+  const parsed = Date.parse(value)
+  return Number.isFinite(parsed) ? parsed : NaN
+}
+
+/**
+ * 取「更晚」的那个日期值。
+ *
+ * 订阅到期日只会随续费往后推，所以两个来源不一致时，**更晚的那个才是新值**。
+ * 旧实现是「落盘记录优先」，续费后哪怕 token 已经带了新日期也会被旧快照压住；
+ * 反过来「token 优先」又会在 token 陈旧时丢掉记录里的新值。取较晚值两头都不会错。
+ * 无法解析的值（空串 / 脏数据）不参与比较，直接让另一个胜出。
+ */
+export function laterDate(a, b) {
+  const aMs = parseDateMs(a)
+  const bMs = parseDateMs(b)
+  if (Number.isNaN(aMs)) return typeof b === 'string' && b ? b : a
+  if (Number.isNaN(bMs)) return a
+  return bMs > aMs ? b : a
+}
+
+/** 取「更早」的那个日期值（订阅起始日语义）。 */
+export function earlierDate(a, b) {
+  const aMs = parseDateMs(a)
+  const bMs = parseDateMs(b)
+  if (Number.isNaN(aMs)) return typeof b === 'string' && b ? b : a
+  if (Number.isNaN(bMs)) return a
+  return bMs < aMs ? b : a
 }
 
 /** JWT 的过期时间（毫秒时间戳）；解析不到返回 0。 */
@@ -231,7 +299,7 @@ async function requestUsage(accessToken, accountId, signal) {
  * 默认**不写回** Codex CLI 的 auth.json：插件只读 CLI 凭证，避免与 CLI 的
  * refresh_token 轮换互相作废或覆盖未知字段。写回仅作为显式 opt-in 保留给
  * 未来的共享凭证模式（writeBack: true）。
- * @returns {Promise<string | undefined>} 新 access_token，失败返回 undefined。
+ * @returns {Promise<{ accessToken: string, idToken?: string } | undefined>} 新 token，失败返回 undefined。
  */
 async function refreshAuth(auth, signal, { writeBack = false } = {}) {
   const refreshToken = auth.tokens && auth.tokens.refresh_token
@@ -279,7 +347,10 @@ async function refreshAuth(auth, signal, { writeBack = false } = {}) {
         // 写回失败：本进程继续用新 token
       }
     }
-    return json.access_token
+    return {
+      accessToken: json.access_token,
+      idToken: typeof json.id_token === 'string' ? json.id_token : undefined,
+    }
   } catch {
     return undefined
   }
@@ -304,9 +375,11 @@ export function __resetUsageCache() {
 export async function getCodexUsage(options = {}) {
   const now = Date.now()
   // 缓存按账号隔离：换号后不会继续显示上一个账号的计划与限额。
+  // 后缀带上「订阅到期日」与 access_token：续费后 token 一旦变化就立刻穿透缓存，
+  // 不会因为 60 秒 TTL 继续显示旧日期。
   const injectedCredential = options.credential
   const cacheKey = injectedCredential
-    ? `plugin:${injectedCredential.accountId || ''}:${String(injectedCredential.accessToken || '').slice(-8)}`
+    ? `plugin:${injectedCredential.accountId || ''}:${String(injectedCredential.accessToken || '').slice(-8)}:${injectedCredential.activeUntil || ''}`
     : 'cli'
   if (cache && cache.key === cacheKey && cache.expiresAt > now) return cache.value
   const env = options.env || {}
@@ -335,7 +408,11 @@ export async function getCodexUsage(options = {}) {
       let accessToken = tokens.access_token
       // access_token 是短命 JWT；快过期时直接刷新，省一次 401 往返。
       if (accessToken && tokenExpiresAt(accessToken) - now < 60_000) {
-        accessToken = (await refreshAuth(auth, signal)) || accessToken
+        const refreshed = await refreshAuth(auth, signal)
+        if (refreshed) {
+          accessToken = refreshed.accessToken
+          if (refreshed.idToken) tokens.id_token = refreshed.idToken
+        }
       }
       let json
       try {
@@ -343,8 +420,10 @@ export async function getCodexUsage(options = {}) {
       } catch (error) {
         if (error && (error.status === 401 || error.status === 403)) {
           const refreshed = await refreshAuth(auth, signal)
-          if (!refreshed) throw error
-          accessToken = refreshed
+          if (!refreshed || !refreshed.accessToken) throw error
+          accessToken = refreshed.accessToken
+          // 服务端有时会连 id_token 一起重签：新的 claims 才是权威值。
+          if (refreshed.idToken) tokens.id_token = refreshed.idToken
           json = await requestUsage(accessToken, tokens.account_id, signal)
         } else {
           throw error
@@ -354,11 +433,17 @@ export async function getCodexUsage(options = {}) {
       if (!parsed) {
         value = { available: false, reason: 'no-rate-limit' }
       } else {
-        // 订阅状态优先用 id_token（含有效期）；拿不到时退回 usage 的 plan_type。
-        const subscription = injectedAuth
-          ? { activeStart: injected.activeStart, activeUntil: injected.activeUntil }
-          : subscriptionFromToken(tokens.id_token) || subscriptionFromToken(accessToken) || {}
-        const plan = parsed.plan || (injectedAuth ? injected.plan : subscription.plan)
+        // 订阅状态取「最新的未过期 token claim」：续费后 id_token 往往还是旧的，
+        // 因此这里必须同时看 access_token，再和落盘快照比较取较新的日期。
+        const fromTokens = injectedAuth
+          ? subscriptionFromTokens([injected.idToken, injected.accessToken], now)
+          : subscriptionFromTokens([tokens.id_token, accessToken], now)
+        const snapshot = injected || {}
+        const subscription = {
+          activeStart: earlierDate(fromTokens.activeStart, snapshot.activeStart),
+          activeUntil: laterDate(fromTokens.activeUntil, snapshot.activeUntil),
+        }
+        const plan = parsed.plan || fromTokens.plan || snapshot.plan
         value = {
           available: true,
           plan,
@@ -366,10 +451,7 @@ export async function getCodexUsage(options = {}) {
           windows: parsed.windows,
           credits: parsed.credits,
           resetCredits: parsed.resetCredits,
-          subscription: {
-            activeStart: subscription.activeStart,
-            activeUntil: subscription.activeUntil,
-          },
+          subscription,
           fetchedAt: now,
           source: 'chatgpt-usage',
         }
