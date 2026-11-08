@@ -189,23 +189,42 @@ test('看板开关是可点击按钮 + 独立保存按钮（保存后才写入�
 
 // ── 订阅到期日：日期必须按本地时区格式化，且不能用 UTC 的「今天」比较 ──────
 
-/** 取出 client.js 里的日期工具函数，在可控时区下单独跑。 */
+/**
+ * 取出 client.js 里的日期工具函数，在目标时区下单独跑。
+ *
+ * 不能靠运行时修改 `process.env.TZ`：Linux 上的 V8 不感知运行时的时区变更，
+ * CI（UTC）会把断言跑成 UTC 结果而不是东八区结果。这里改为给被测函数注入
+ * 一个「本地年月日按目标时区解析」的 Date 包装，测试结果与宿主机时区无关。
+ */
 function loadDateHelpers(timeZone) {
   const start = source.indexOf('function localDateKey(value)')
   const end = source.indexOf('/** unix 秒 → 本地「MM-DD HH:mm」')
   assert.ok(start > 0 && end > start, '未找到日期工具函数')
   const body = source.slice(start, end)
-  const previous = process.env.TZ
-  process.env.TZ = timeZone
-  try {
-    const factory = new Function(`${body}; return { localDateKey, formatDate, localToday, parseDateValue }`)
-    const helpers = factory()
-    // new Date() 的时区解析发生在构造时，这里用真实 Date 校验结果。
-    return helpers
-  } finally {
-    if (previous === undefined) delete process.env.TZ
-    else process.env.TZ = previous
+  const RealDate = Date
+  const formatter = new Intl.DateTimeFormat('en-CA', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  })
+  const zoned = (date) => {
+    // Invalid Date（解析失败的字符串）没有本地年月日可取，原样返回让调用方判空。
+    if (Number.isNaN(date.getTime())) return date
+    const parts = Object.fromEntries(formatter.formatToParts(date).map(({ type, value }) => [type, value]))
+    date.getFullYear = () => Number(parts.year)
+    date.getMonth = () => Number(parts.month) - 1
+    date.getDate = () => Number(parts.day)
+    return date
   }
+  const ZonedDate = function (...args) {
+    return zoned(new RealDate(...args))
+  }
+  ZonedDate.now = RealDate.now
+  ZonedDate.parse = RealDate.parse
+  ZonedDate.UTC = RealDate.UTC
+  const factory = new Function('Date', `${body}; return { localDateKey, formatDate, localToday, parseDateValue }`)
+  return factory(ZonedDate)
 }
 
 test('formatDate: 按本地日期而非 UTC 日期格式化（东八区零点后不会差一天）', () => {
