@@ -198,3 +198,29 @@ test('interleaved tool deltas and reverse done events retain indexed order', asy
   assert.deepEqual(chunks.at(-1).replayState.response.output, [a, b]);
   assert.deepEqual((await bodyFor([assistant(blocks(chunks), [a, b])])).input, [a, b]);
 });
+
+test('an empty completed summary never erases streamed reasoning text', async () => {
+  // 加密 reasoning 的完成项只带 encrypted_content、summary 为空数组：
+  // 完成事件是权威的，但空 summary 不能把已经流出的正文覆盖掉。
+  const item = { type: 'reasoning', id: 'r1', summary: [], encrypted_content: 'opaque-r1' };
+  const chunks = await stream([
+    { type: 'response.reasoning_text.delta', item_id: 'r1', output_index: 0, content_index: 0, delta: 'thinking' },
+    done(item, 0),
+    completed([item]),
+  ]);
+  assert.deepEqual(blocks(chunks), [{ type: 'reasoning', text: 'thinking' }]);
+  assert.equal(reasoningDeltas(chunks), 'thinking');
+});
+
+test('summary and raw reasoning channels keep stream order without cross-contamination', async () => {
+  const item = reasoning('r1', 'sum');
+  const chunks = await stream([
+    { type: 'response.reasoning_summary_text.delta', item_id: 'r1', output_index: 0, summary_index: 0, delta: 'sum' },
+    { type: 'response.reasoning_text.delta', item_id: 'r1', output_index: 0, content_index: 0, delta: 'raw' },
+    { type: 'response.reasoning_summary_text.done', item_id: 'r1', output_index: 0, summary_index: 0, text: 'sum' },
+    done(item, 0),
+    completed([item]),
+  ]);
+  assert.deepEqual(blocks(chunks), [{ type: 'reasoning', text: 'sumraw' }]);
+  assert.equal(reasoningDeltas(chunks), 'sumraw');
+});
