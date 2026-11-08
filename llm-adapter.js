@@ -501,7 +501,9 @@ export function createCodexGptAdapter(opts) {
           if (!delta) continue
           const block = selectReasoningBlock(event)
           if (block.ended) continue
-          const part = event.summary_index ?? event.content_index ?? 0
+          // 摘要与明文正文是同一个 reasoning item 的两条独立通道：分开记键，
+          // 否则两条流的 delta 会拼进同一个 part，最终文本顺序被它们的事件顺序污染。
+          const part = `${type === 'response.reasoning_text.delta' ? 'content' : 'summary'}:${event.summary_index ?? event.content_index ?? 0}`
           block.parts.set(part, (block.parts.get(part) || '') + delta)
           const start = startReasoningBlock()
           if (start) yield start
@@ -545,15 +547,24 @@ export function createCodexGptAdapter(opts) {
           if (item?.type === 'reasoning') {
             const block = selectReasoningBlock(event, item)
             if (block.ended) continue
-            const text = Array.isArray(item.summary) ? item.summary.filter(p => p?.type === 'summary_text').map(p => p.text).join('') : block.text
-            if (text && !block.started) {
+            // 完成项可能只带加密 reasoning、summary 为空数组：此时绝不能把已经
+            // 流式输出的正文覆盖成空串（否则 reasoning block 丢失全部内容）。
+            const summaryText = Array.isArray(item.summary)
+              ? item.summary.filter(p => p?.type === 'summary_text' && typeof p.text === 'string').map(p => p.text).join('')
+              : ''
+            if (!block.started && summaryText) {
               const start = startReasoningBlock()
               if (start) yield start
-              reasoningBlock.text = text
-              yield { type: 'reasoning-delta', index: reasoningBlock.index, text }
+              block.text = summaryText
+              yield { type: 'reasoning-delta', index: block.index, text: summaryText }
+            } else if (summaryText && summaryText !== block.text) {
+              // 完成项里的 summary 是权威值：只补发流式尚未到达的尾部，避免重复。
+              const tail = summaryText.startsWith(block.text) ? summaryText.slice(block.text.length) : undefined
+              if (block.text.length === 0 || tail !== undefined) {
+                block.text = summaryText
+                if (tail) yield { type: 'reasoning-delta', index: block.index, text: tail }
+              }
             }
-            // The completed item is authoritative, including all summary parts.
-            block.text = text
             const end = closeReasoningBlock()
             if (end) yield end
             continue
@@ -608,17 +619,20 @@ export function createCodexGptAdapter(opts) {
                 : ''
           const block = selectReasoningBlock(event)
           if (block.ended) continue
-          const part = event.summary_index ?? event.content_index ?? 0
+          const part = `${type === 'response.reasoning_text.done' ? 'content' : 'summary'}:${event.summary_index ?? event.content_index ?? 0}`
           const previous = block.parts.get(part) || ''
           if (finalText) block.parts.set(part, finalText)
           if (finalText && !block.started) {
             const start = startReasoningBlock()
             if (start) yield start
           }
+          // 按流顺序累积，只补发本 part 尚未输出的尾部；不再按索引重排重建，
+          // 否则同一条目里的正文与摘要会因排序互相穿插。
           if (finalText.startsWith(previous) && finalText.length > previous.length) {
-            yield { type: 'reasoning-delta', index: block.index, text: finalText.slice(previous.length) }
+            const extra = finalText.slice(previous.length)
+            block.text += extra
+            yield { type: 'reasoning-delta', index: block.index, text: extra }
           }
-          block.text = [...block.parts.entries()].sort((a, b) => a[0] - b[0]).map(([, text]) => text).join('')
           // A summary part is not a complete reasoning item. Close on output_item.done.
           continue
         }
